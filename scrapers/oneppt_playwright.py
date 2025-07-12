@@ -75,6 +75,39 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
             # 获取搜索结果
             page_num = 1
             has_next_page = True  # 添加标志，表示是否还有下一页
+            total_result = 0  # 总记录数
+            total_pages = 0   # 总页数
+            
+            # 首先从第一页获取总记录数
+            content = await self.page.content()
+            soup = BeautifulSoup(content, "html.parser")
+            
+            # 从页面中提取总记录数和总页数
+            page_info = soup.select_one("div.page") or soup.select_one("ul.pages")
+            if page_info:
+                page_text = page_info.text
+                # 尝试匹配"共256条记录"格式
+                total_match = re.search(r'共(\d+)条记录', page_text)
+                if total_match:
+                    total_result = int(total_match.group(1))
+                    print(f"总记录数: {total_result}")
+                
+                # 尝试匹配"共11页/256条"格式
+                page_match = re.search(r'共(\d+)页/(\d+)条', page_text)
+                if page_match:
+                    total_pages = int(page_match.group(1))
+                    if not total_result:  # 如果上面没有提取到总记录数
+                        total_result = int(page_match.group(2))
+                    print(f"总页数: {total_pages}, 总记录数: {total_result}")
+            
+            # 如果没有找到总记录数，尝试从表单中查找
+            if not total_result:
+                form = soup.select_one("form[name='pagelist']")
+                if form:
+                    total_result_input = form.select_one("input[name='TotalResult']")
+                    if total_result_input and total_result_input.get('value'):
+                        total_result = int(total_result_input.get('value'))
+                        print(f"从表单中获取总记录数: {total_result}")
             
             while len(results) < max_results and has_next_page:
                 print(f"正在获取第 {page_num} 页搜索结果...")
@@ -176,35 +209,30 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                     print("未找到主容器")
                 
                 # 检查是否有下一页
-                next_page_link = None
-                
-                # 查找"下一页"链接
-                for a_tag in soup.select("div.page a, ul.pages a"):
-                    if "下一页" in a_tag.text:
-                        next_page_link = a_tag
-                        break
-                
-                # 如果没有找到"下一页"链接或者已经达到最大结果数量，则停止翻页
-                if not next_page_link or len(results) >= max_results:
-                    print("没有下一页或已达到最大结果数量")
+                # 如果已经是最后一页，则停止翻页
+                if total_pages > 0 and page_num >= total_pages:
+                    print(f"已达到最后一页 ({page_num}/{total_pages})，停止翻页")
                     has_next_page = False
                     break
                 
-                # 从页面中提取TotalResult参数
-                total_result = 0
-                page_info = soup.select_one("div.page") or soup.select_one("ul.pages")
-                if page_info:
-                    page_text = page_info.text
-                    match = re.search(r'共(\d+)页/(\d+)条', page_text)
-                    if match:
-                        total_pages = int(match.group(1))
-                        total_result = int(match.group(2))
-                        print(f"总页数: {total_pages}, 总结果数: {total_result}")
-                        
-                        # 如果已经是最后一页，则停止翻页
-                        if page_num >= total_pages:
-                            has_next_page = False
+                # 如果没有总页数信息，则检查页面中的"下一页"链接
+                if not total_pages:
+                    next_page_link = None
+                    for a_tag in soup.select("div.page a, ul.pages a"):
+                        if "下一页" in a_tag.text:
+                            next_page_link = a_tag
                             break
+                    
+                    if not next_page_link:
+                        print("没有找到'下一页'链接，停止翻页")
+                        has_next_page = False
+                        break
+                
+                # 如果已经达到最大结果数量，则停止翻页
+                if len(results) >= max_results:
+                    print(f"已达到最大结果数量 ({max_results})，停止翻页")
+                    has_next_page = False
+                    break
                 
                 # 构建下一页URL
                 page_num += 1
@@ -224,6 +252,21 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                         f.write(content)
                 except Exception as e:
                     print(f"保存下一页内容失败: {str(e)}")
+                
+                # 检查当前页是否有内容，如果没有内容则停止翻页
+                soup = BeautifulSoup(content, "html.parser")
+                main_container = (
+                    soup.select_one("div.w.center.mt8 ul.tplist") or 
+                    soup.select_one("ul.tplist") or 
+                    soup.select_one("div.w.center.mt8") or 
+                    soup.select_one("div.center.mt8") or 
+                    soup.select_one("ul.cList")
+                )
+                
+                if not main_container or not main_container.select("li"):
+                    print("当前页没有内容，停止翻页")
+                    has_next_page = False
+                    break
             
             # 如果没有结果，尝试备用搜索方法
             if not results:
@@ -815,12 +858,18 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
         try:
             # 确保已初始化
             if not self.is_initialized:
+                print("爬虫未初始化，正在初始化...")
                 await self.initialize()
                 
             # 确保页面对象存在
             if self.page is None:
                 print("页面对象不存在，重新初始化...")
                 await self.initialize()
+                
+            # 再次检查页面对象是否存在
+            if self.page is None:
+                print("无法创建页面对象，放弃获取下载链接")
+                return download_links
             
             # 先从详情页获取标题和日期等信息
             info = await self.get_detail_page_info(detail_url)
@@ -1031,12 +1080,18 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
         try:
             # 确保已初始化
             if not self.is_initialized:
+                print("爬虫未初始化，正在初始化...")
                 await self.initialize()
                 
             # 确保页面对象存在
             if self.page is None:
                 print("页面对象不存在，重新初始化...")
                 await self.initialize()
+                
+            # 再次检查页面对象是否存在
+            if self.page is None:
+                print("无法创建页面对象，放弃下载")
+                return False
             
             # 判断是否是网盘链接
             if "pan.quark" in url or "pan.baidu" in url:
@@ -1295,6 +1350,7 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
         try:
             # 确保已初始化
             if not self.is_initialized:
+                print("爬虫未初始化，正在初始化...")
                 await self.initialize()
                 
             # 确保页面对象存在
@@ -1302,12 +1358,34 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                 print("页面对象不存在，重新初始化...")
                 await self.initialize()
                 
+            # 再次检查页面对象是否存在
+            if self.page is None:
+                print("无法创建页面对象，放弃获取页面内容")
+                return ""
+            
             # 设置随机用户代理
-            user_agent = random.choice(self.user_agents)
-            await self.page.set_extra_http_headers({
-                "User-Agent": user_agent,
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
-            })
+            try:
+                user_agent = random.choice(self.user_agents)
+                await self.page.set_extra_http_headers({
+                    "User-Agent": user_agent,
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+                })
+            except Exception as e:
+                print(f"设置HTTP头部失败: {str(e)}")
+                # 可能需要重新初始化
+                await self.initialize()
+                
+                # 再次检查页面对象
+                if self.page is None:
+                    print("重新初始化后页面对象仍然不存在，放弃获取页面内容")
+                    return ""
+                
+                # 重新设置HTTP头部
+                user_agent = random.choice(self.user_agents)
+                await self.page.set_extra_http_headers({
+                    "User-Agent": user_agent,
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+                })
             
             # 随机等待，避免被检测为爬虫
             await asyncio.sleep(random.uniform(0.1, 0.3))  # 优化：进一步减少等待时间
@@ -1342,24 +1420,46 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
         """
         try:
             if self.page:
-                await self.page.close()
-                self.page = None
+                try:
+                    await self.page.close()
+                except Exception as e:
+                    print(f"关闭页面时发生错误: {str(e)}")
+                finally:
+                    self.page = None
             
             if self.context:
-                await self.context.close()
-                self.context = None
+                try:
+                    await self.context.close()
+                except Exception as e:
+                    print(f"关闭上下文时发生错误: {str(e)}")
+                finally:
+                    self.context = None
                 
             if self.browser:
-                await self.browser.close()
-                self.browser = None
+                try:
+                    await self.browser.close()
+                except Exception as e:
+                    print(f"关闭浏览器时发生错误: {str(e)}")
+                finally:
+                    self.browser = None
                 
             if self.playwright:
-                await self.playwright.stop()
-                self.playwright = None
+                try:
+                    await self.playwright.stop()
+                except Exception as e:
+                    print(f"停止Playwright时发生错误: {str(e)}")
+                finally:
+                    self.playwright = None
                 
             self.is_initialized = False
             print("Playwright资源已释放")
         except Exception as e:
             print(f"关闭Playwright时发生错误: {str(e)}")
             import traceback
-            print(traceback.format_exc()) 
+            print(traceback.format_exc())
+            # 确保重置所有资源
+            self.page = None
+            self.context = None
+            self.browser = None
+            self.playwright = None
+            self.is_initialized = False 
