@@ -202,17 +202,23 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                         if date_elem:
                             date = date_elem.text.strip()
                         
+                        # 获取分类信息
                         category = ""
-                        category_elem = item.select_one(".category") or item.select_one(".cat")
-                        if category_elem:
-                            category = category_elem.text.strip()
+                        # 查找分类信息 - 通常是链接下方的另一个a标签
+                        category_links = item.select("a")
+                        if len(category_links) > 1:
+                            for a in category_links:
+                                if a != link_elem:
+                                    category_text = a.text.strip()
+                                    if category_text and "PPT" in category_text:
+                                        category = category_text
+                                        break
                         
-                        # 从链接文本中获取分类信息
-                        if not category and len(item.select("a")) > 1:
-                            for a in item.select("a"):
-                                if a != link_elem and a.text.strip():
-                                    category = a.text.strip()
-                                    break
+                        # 如果没有找到分类，尝试其他选择器
+                        if not category:
+                            category_elem = item.select_one(".category") or item.select_one(".cat")
+                            if category_elem:
+                                category = category_elem.text.strip()
                         
                         # 添加到结果列表
                         results.append({
@@ -240,10 +246,13 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 
                 # 查找"下一页"链接
                 next_page_link = None
-                for a_tag in soup.select(".page a, .pages a, .pagination a"):
-                    if "下一页" in a_tag.text or ">" in a_tag.text:
-                        next_page_link = a_tag
-                        break
+                pagination = soup.select_one(".page, .pages, .pagination")
+                if pagination:
+                    for a_tag in pagination.select("a"):
+                        a_text = a_tag.text.strip()
+                        if "下一页" in a_text or ">" in a_text or a_text == "»":
+                            next_page_link = a_tag
+                            break
                 
                 # 如果没有找到"下一页"链接，则停止翻页
                 if not next_page_link:

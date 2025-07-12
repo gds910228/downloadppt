@@ -359,29 +359,29 @@ class PPTDownloaderGUI:
     
     async def display_results(self, results):
         """显示搜索结果"""
-        # 保存搜索结果
-        self.search_results = results
-        
         # 清空表格
         for item in self.result_table.get_children():
             self.result_table.delete(item)
         
         # 添加结果到表格
-        for result in results:
-            # 跳过空标题或无效链接
-            if not result["title"] or not result["url"] or "51miz.com" in result["url"] or "ibaotu.com" in result["url"]:
-                continue
-                
+        for i, result in enumerate(results):
+            title = result.get("title", "")
+            date = result.get("date", "")
+            category = result.get("category", "")
+            source = result.get("source", "")
+            
             # 添加到表格
-            self.result_table.insert("", tk.END, values=(
-                "□",  # 默认未选中
-                result["title"],
-                result["date"],
-                result["category"],
-                result["source"]
-            ))
+            self.result_table.insert("", tk.END, values=("", title, date, category, source))
         
-        # 启用下载按钮
+        # 更新状态
+        self.status_var.set(f"找到 {len(results)} 个结果")
+        self.log(f"搜索完成，找到 {len(results)} 个结果")
+        
+        # 保存搜索结果
+        self.search_results = results
+        
+        # 恢复按钮状态
+        self.search_button.config(state=tk.NORMAL)
         self.download_button.config(state=tk.NORMAL)
     
     def download(self):
