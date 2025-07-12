@@ -390,116 +390,172 @@ class PPTDownloaderGUI:
         asyncio.run_coroutine_threadsafe(self._download(), self.loop)
     
     async def _download(self):
-        """异步下载选中的PPT"""
-        # 获取选中项
-        selected_items = []
-        for item in self.result_table.get_children():
-            if self.result_table.item(item, "values")[0] == "✓":
-                selected_items.append(item)
-        
-        if not selected_items:
-            messagebox.showwarning("警告", "请选择要下载的PPT")
-            self.download_button.config(state=tk.NORMAL)
-            self.search_button.config(state=tk.NORMAL)
-            return
-        
-        # 获取输出目录
-        output_dir = self.output_dir_var.get()
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-        
-        # 设置状态
-        self.is_downloading = True
-        self.download_button.config(state=tk.DISABLED)
-        self.search_button.config(state=tk.DISABLED)
-        self.set_status("正在下载...")
-        
+        """下载选中的PPT"""
         try:
-            # 下载选中的PPT
-            download_count = 0
+            # 获取选中的项目
+            selected_items = self.result_table.selection()
+            if not selected_items:
+                messagebox.showinfo("提示", "请先选择要下载的PPT")
+                return
             
-            for item_id in selected_items:
-                # 获取项目索引
-                item_index = self.result_table.index(item_id)
-                
-                # 获取结果数据
-                result = self.search_results[item_index]
-                
-                # 获取下载链接
-                self.set_status(f"正在获取下载链接: {result['title']}")
-                self.log(f"正在获取下载链接: {result['url']}")
-                
-                # 根据来源选择爬虫
-                if result["source"] == "1PPT":
-                    scraper = self.oneppt_scraper
-                else:
-                    scraper = self.ypppt_scraper
-                
-                # 获取详情页信息
-                detail_info = await scraper.get_detail_page_info(result["url"])
-                
-                # 更新标题（如果详情页有更准确的标题）
-                if detail_info["title"]:
-                    result["title"] = detail_info["title"]
-                    self.log(f"更新标题: {result['title']}")
-                
-                # 更新日期（如果详情页有日期）
-                if detail_info["date"]:
-                    result["date"] = detail_info["date"]
-                
-                # 获取下载链接
-                download_links = await scraper.get_download_links(result["url"])
-                
-                # 如果没有本地下载链接，跳过
-                if not download_links["local"]:
-                    self.log(f"未找到下载链接: {result['title']}")
+            # 获取输出目录
+            output_dir = self.output_dir_var.get()
+            if not output_dir:
+                output_dir = "downloads"
+            
+            # 创建输出目录
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # 设置下载状态
+            self.is_downloading = True
+            self.download_button.config(state=tk.DISABLED)
+            self.search_button.config(state=tk.DISABLED)
+            self.status_var.set("正在下载...")
+            
+            # 初始化爬虫（如果尚未初始化）
+            if not self.oneppt_scraper:
+                self.oneppt_scraper = OnePptPlaywrightScraper()
+                await self.oneppt_scraper.initialize()
+            
+            if not self.ypppt_scraper:
+                self.ypppt_scraper = YppptPlaywrightScraper()
+                await self.ypppt_scraper.initialize()
+            
+            # 下载选中的PPT
+            total_selected = len(selected_items)
+            success_count = 0
+            failed_count = 0
+            
+            for i, item_id in enumerate(selected_items):
+                try:
+                    # 获取项目信息
+                    item_index = self.result_table.index(item_id)
+                    if item_index >= len(self.search_results):
+                        self.log(f"错误：项目索引 {item_index} 超出范围")
+                        continue
+                    
+                    item = self.search_results[item_index]
+                    title = item["title"]
+                    url = item["url"]
+                    source = item["source"]
+                    category = item["category"]
+                    
+                    # 更新状态
+                    self.status_var.set(f"正在下载 ({i+1}/{total_selected}): {title}")
+                    self.log(f"开始下载 ({i+1}/{total_selected}): {title}")
+                    self.log(f"详情页URL: {url}")
+                    
+                    # 根据来源选择爬虫
+                    scraper = None
+                    if "1PPT" in source:
+                        scraper = self.oneppt_scraper
+                    elif "优品PPT" in source:
+                        scraper = self.ypppt_scraper
+                    else:
+                        self.log(f"未知来源: {source}，跳过下载")
+                        failed_count += 1
+                        continue
+                    
+                    # 确保爬虫已初始化
+                    if not scraper or not scraper.is_initialized:
+                        if not scraper:
+                            self.log(f"错误：未找到适用于 {source} 的爬虫")
+                        else:
+                            self.log(f"爬虫未初始化，正在初始化...")
+                            await scraper.initialize()
+                        
+                        if not scraper or not scraper.is_initialized:
+                            self.log(f"初始化爬虫失败，跳过下载")
+                            failed_count += 1
+                            continue
+                    
+                    # 获取下载链接
+                    self.log(f"正在获取下载链接...")
+                    download_info = await scraper.get_download_links(url)
+                    
+                    if not download_info or not download_info["local"]:
+                        self.log(f"未找到下载链接，跳过下载")
+                        failed_count += 1
+                        continue
+                    
+                    download_url = download_info["local"]
+                    self.log(f"找到下载链接: {download_url}")
+                    
+                    # 使用详情页获取的标题（如果有）
+                    if download_info["title"]:
+                        title = download_info["title"]
+                    
+                    # 使用详情页获取的分类（如果有）
+                    if download_info["category"] and not category:
+                        category = download_info["category"]
+                    
+                    # 创建分类子目录
+                    sub_dir = output_dir
+                    if category:
+                        sub_dir = os.path.join(output_dir, category)
+                        os.makedirs(sub_dir, exist_ok=True)
+                    
+                    # 构建文件名
+                    file_name = f"{title}.zip"  # 默认使用zip扩展名
+                    
+                    # 替换文件名中的非法字符
+                    file_name = file_name.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
+                    
+                    # 构建完整的文件路径
+                    file_path = os.path.join(sub_dir, file_name)
+                    
+                    # 下载文件
+                    self.log(f"开始下载文件: {download_url}")
+                    self.log(f"保存到: {file_path}")
+                    
+                    # 执行下载
+                    success = await scraper.download(download_url, file_path, title)
+                    
+                    if success:
+                        self.log(f"下载成功: {file_path}")
+                        success_count += 1
+                        
+                        # 更新表格状态
+                        self.result_table.item(item_id, values=(f"✓", title, item["date"], category, source))
+                    else:
+                        self.log(f"下载失败: {download_url}")
+                        failed_count += 1
+                        
+                        # 更新表格状态
+                        self.result_table.item(item_id, values=(f"✗", title, item["date"], category, source))
+                    
+                    # 更新界面
+                    self.root.update_idletasks()
+                except Exception as e:
+                    self.log(f"下载过程中发生错误: {str(e)}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    failed_count += 1
                     continue
-                
-                # 构建保存路径
-                file_name = f"{result['title']}.zip"
-                # 替换文件名中的非法字符
-                file_name = file_name.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
-                file_path = os.path.join(output_dir, file_name)
-                
-                # 下载文件
-                self.set_status(f"正在下载: {result['title']}")
-                self.log(f"正在下载: {download_links['local']} -> {file_path}")
-                
-                # 执行下载
-                success = await scraper.download(download_links["local"], file_path, result["title"])
-                
-                if success:
-                    download_count += 1
-                    self.log(f"下载成功: {file_path}")
-                else:
-                    self.log(f"下载失败: {result['title']}")
+            
+            # 完成下载
+            self.status_var.set(f"下载完成: {success_count}成功, {failed_count}失败")
+            self.log(f"下载完成: {success_count}成功, {failed_count}失败")
             
             # 保存日志
             log_path = self.save_log(output_dir)
-            
-            # 设置状态
-            self.set_status(f"下载完成，成功 {download_count}/{len(selected_items)} 个")
+            if log_path:
+                self.log(f"下载日志已保存到: {log_path}")
             
             # 显示完成消息
-            if download_count > 0:
-                messagebox.showinfo("下载完成", f"成功下载 {download_count} 个PPT")
-                
-                # 打开下载目录
-                try:
-                    os.startfile(output_dir)
-                except:
-                    pass
+            messagebox.showinfo("下载完成", f"下载完成\n成功: {success_count}\n失败: {failed_count}")
+            
         except Exception as e:
             self.log(f"下载过程中发生错误: {str(e)}")
             import traceback
             self.log(traceback.format_exc())
-            self.set_status("下载失败")
-            messagebox.showerror("错误", f"下载失败: {str(e)}")
+            messagebox.showerror("错误", f"下载过程中发生错误: {str(e)}")
         finally:
-            # 恢复状态
+            # 重置下载状态
             self.is_downloading = False
             self.download_button.config(state=tk.NORMAL)
             self.search_button.config(state=tk.NORMAL)
+            self.status_var.set("就绪")
     
     def select_all(self):
         """全选所有项目"""

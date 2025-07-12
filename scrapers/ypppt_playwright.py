@@ -10,6 +10,7 @@ import time
 import random
 import asyncio
 import re
+import urllib.parse
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, quote
 from .playwright_scraper import PlaywrightScraper
@@ -21,25 +22,37 @@ class YppptPlaywrightScraper(PlaywrightScraper):
         """初始化爬虫"""
         super().__init__()
         self.base_url = "https://www.ypppt.com"
-        self.search_url = "https://www.ypppt.com/search/{}.html"
+        self.search_url = "https://www.ypppt.com/p/search.php?kwtype=1&q={}"
         self.alt_search_url = "https://www.ypppt.com/index.php?s={}"
+        
+        # 创建临时目录用于保存HTML文件
+        self.temp_dir = os.path.join(os.getcwd(), "temp")
+        os.makedirs(self.temp_dir, exist_ok=True)
+        
+        # 添加.gitignore文件到临时目录
+        gitignore_path = os.path.join(self.temp_dir, ".gitignore")
+        if not os.path.exists(gitignore_path):
+            with open(gitignore_path, "w", encoding="utf-8") as f:
+                f.write("*\n!.gitignore\n")
     
-    async def search(self, keyword, max_results=40):
+    async def search(self, keyword, max_results=40, timeout=60):
         """
         搜索PPT
         
         Args:
             keyword (str): 搜索关键词
             max_results (int): 最大结果数量
+            timeout (int): 搜索超时时间（秒）
             
         Returns:
             list: 搜索结果列表，每个结果包含标题、URL等信息
         """
         results = []
+        search_start_time = time.time()
         
         try:
             # 构建搜索URL
-            search_url = f"https://www.ypppt.com/search/{urllib.parse.quote(keyword)}/"
+            search_url = self.search_url.format(urllib.parse.quote(keyword))
             
             # 访问搜索页面
             print(f"正在搜索: {search_url}")
@@ -50,17 +63,58 @@ class YppptPlaywrightScraper(PlaywrightScraper):
             # 访问搜索页面
             print("正在访问搜索页面...")
             await self.page.goto(search_url, wait_until="domcontentloaded")
+            await asyncio.sleep(1)  # 确保页面加载完成
+            
+            # 保存搜索结果页面以便调试
+            content = await self.page.content()
+            with open(os.path.join(self.temp_dir, "search_result_ypppt.html"), "w", encoding="utf-8") as f:
+                f.write(content)
             
             # 获取搜索结果
             page_num = 1
             has_next_page = True  # 添加标志，表示是否还有下一页
+            total_result = 0  # 总记录数
+            total_pages = 0   # 总页数
+            
+            # 从第一页解析总记录数和总页数
+            soup = BeautifulSoup(content, "html.parser")
+            
+            # 尝试从页面底部的分页区域获取总页数和总记录数
+            pagination = soup.select_one(".page, .pages, .pagination")
+            if pagination:
+                page_text = pagination.text
+                # 尝试匹配总页数和总记录数
+                page_match = re.search(r'共(\d+)页', page_text)
+                if page_match:
+                    total_pages = int(page_match.group(1))
+                    print(f"总页数: {total_pages}")
+                
+                # 如果在第一页找不到总记录数，我们需要获取第二页URL来提取
+                if not total_result and len(pagination.select("a")) > 0:
+                    for a_tag in pagination.select("a"):
+                        if "下一页" in a_tag.text or ">" in a_tag.text:
+                            next_page_url = a_tag["href"]
+                            if not next_page_url.startswith("http"):
+                                next_page_url = urljoin(self.base_url, next_page_url)
+                            
+                            # 从URL中提取TotalResult参数
+                            total_result_match = re.search(r'TotalResult=(\d+)', next_page_url)
+                            if total_result_match:
+                                total_result = int(total_result_match.group(1))
+                                print(f"总记录数: {total_result}")
+                            break
             
             while len(results) < max_results and has_next_page:
+                # 检查是否超时
+                if time.time() - search_start_time > timeout:
+                    print(f"搜索超时，已经搜索了 {timeout} 秒")
+                    break
+                    
                 print(f"正在获取第 {page_num} 页搜索结果...")
                 
                 # 等待搜索结果加载
                 try:
-                    await self.page.wait_for_selector("div.posts, div.box, div.list, ul.list", timeout=5000)
+                    await self.page.wait_for_selector("ul.posts, div.posts, div.box, div.list, ul.list", timeout=5000)
                 except Exception as e:
                     print(f"等待选择器失败: {str(e)}")
                 
@@ -68,13 +122,16 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 content = await self.page.content()
                 
                 # 保存当前页面内容以便调试
-                with open(f"search_result_ypppt_page{page_num}.html", "w", encoding="utf-8") as f:
+                search_result_path = os.path.join(self.temp_dir, f"search_result_ypppt_page{page_num}.html")
+                with open(search_result_path, "w", encoding="utf-8") as f:
                     f.write(content)
                 
                 soup = BeautifulSoup(content, "html.parser")
                 
-                # 查找主容器
+                # 查找主容器 - 优先使用ul.posts.clear
                 main_container = (
+                    soup.select_one("ul.posts.clear") or
+                    soup.select_one("ul.posts") or 
                     soup.select_one("div.posts") or 
                     soup.select_one("div.box") or 
                     soup.select_one("div.list") or 
@@ -84,87 +141,127 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 if main_container:
                     print(f"找到主容器: {main_container.name}.{' '.join(main_container.get('class', []))}")
                     
-                    # 查找所有列表项
-                    list_items = main_container.select("li") or main_container.select("div.post")
-                    print(f"找到 {len(list_items)} 个列表项")
+                    # 查找所有非广告的列表项 (排除 class="miz" 的li元素)
+                    list_items = []
+                    for li in main_container.select("li"):
+                        # 只跳过明确标记为miz的广告li
+                        if li.get("class") and "miz" in li.get("class"):
+                            print(f"跳过广告li: {li.get('class')}")
+                        else:
+                            list_items.append(li)
+                    
+                    print(f"找到 {len(list_items)} 个非广告列表项")
                     
                     # 处理每个列表项
                     for item in list_items:
                         if len(results) >= max_results:
                             break
                         
-                        # 获取标题和链接
-                        title_elem = item.select_one("h2") or item.select_one("h3") or item.select_one("a")
+                        # 获取链接
+                        link_elem = item.select_one("a")
+                        if not link_elem or not link_elem.has_attr("href"):
+                            print("跳过没有链接的项目")
+                            continue
+                        
+                        # 获取URL
+                        url = link_elem["href"]
+                        if not url.startswith("http"):
+                            url = urljoin(self.base_url, url)
+                        
+                        # 跳过广告链接
+                        if "51miz.com" in url or "ibaotu.com" in url:
+                            print(f"跳过广告链接: {url}")
+                            continue
+                        
+                        # 获取标题
+                        title = ""
+                        # 优先从h2或h3标签获取标题
+                        title_elem = item.select_one("h2") or item.select_one("h3")
                         if title_elem:
-                            # 获取标题
-                            if title_elem.name in ["h2", "h3"]:
-                                link_elem = title_elem.select_one("a")
-                                title = title_elem.text.strip()
-                            else:
-                                link_elem = title_elem
-                                title = title_elem.text.strip() or title_elem.get("title", "").strip()
+                            title = title_elem.text.strip()
+                        else:
+                            # 从链接文本或title属性获取标题
+                            title = link_elem.text.strip() or link_elem.get("title", "").strip()
+                        
+                        # 如果标题为空，尝试从图片alt属性获取
+                        if not title:
+                            img = link_elem.select_one("img")
+                            if img and img.has_attr("alt"):
+                                title = img.get("alt", "").strip()
+                        
+                        # 如果仍然没有标题，使用URL的最后部分
+                        if not title:
+                            title = url.split("/")[-1].split(".")[0]
                             
-                            # 跳过空白标题或广告链接
-                            if not title or "广告" in title or "ad" in str(item).lower():
-                                print(f"跳过空白标题或广告链接")
-                                continue
-                                
-                            print(f"找到标题: {title[:30]}")
-                            
-                            # 获取链接
-                            if link_elem and "href" in link_elem.attrs:
-                                url = link_elem["href"]
-                                if not url.startswith("http"):
-                                    url = f"https://www.ypppt.com{url}"
-                                
-                                # 跳过广告链接
-                                if "ad" in url.lower() or "51miz.com" in url or "ibaotu.com" in url:
-                                    print(f"跳过广告链接: {url}")
-                                    continue
-                                    
-                                print(f"找到链接: {url}")
-                                
-                                # 获取日期和分类
-                                date = ""
-                                date_elem = item.select_one(".date") or item.select_one(".time")
-                                if date_elem:
-                                    date = date_elem.text.strip()
-                                
-                                category = ""
-                                category_elem = item.select_one(".category") or item.select_one(".cat")
-                                if category_elem:
-                                    category = category_elem.text.strip()
-                                
-                                # 添加到结果列表
-                                results.append({
-                                    "title": title,
-                                    "url": url,
-                                    "date": date,
-                                    "category": category,
-                                    "source": "优品PPT"
-                                })
+                        print(f"找到标题: {title[:30]}")
+                        print(f"找到链接: {url}")
+                        
+                        # 获取日期和分类
+                        date = ""
+                        date_elem = item.select_one(".date") or item.select_one(".time")
+                        if date_elem:
+                            date = date_elem.text.strip()
+                        
+                        category = ""
+                        category_elem = item.select_one(".category") or item.select_one(".cat")
+                        if category_elem:
+                            category = category_elem.text.strip()
+                        
+                        # 从链接文本中获取分类信息
+                        if not category and len(item.select("a")) > 1:
+                            for a in item.select("a"):
+                                if a != link_elem and a.text.strip():
+                                    category = a.text.strip()
+                                    break
+                        
+                        # 添加到结果列表
+                        results.append({
+                            "title": title,
+                            "url": url,
+                            "date": date,
+                            "category": category,
+                            "source": "优品PPT"
+                        })
                 else:
                     print("未找到主容器")
                 
                 # 检查是否有下一页
-                next_page_link = None
+                # 如果已经是最后一页，则停止翻页
+                if total_pages > 0 and page_num >= total_pages:
+                    print(f"已达到最后一页 ({page_num}/{total_pages})，停止翻页")
+                    has_next_page = False
+                    break
+                
+                # 如果已经达到最大结果数量，则停止翻页
+                if len(results) >= max_results:
+                    print(f"已达到最大结果数量 ({max_results})，停止翻页")
+                    has_next_page = False
+                    break
                 
                 # 查找"下一页"链接
+                next_page_link = None
                 for a_tag in soup.select(".page a, .pages a, .pagination a"):
                     if "下一页" in a_tag.text or ">" in a_tag.text:
                         next_page_link = a_tag
                         break
                 
-                # 如果没有找到"下一页"链接或者已经达到最大结果数量，则停止翻页
-                if not next_page_link or len(results) >= max_results:
-                    print("没有下一页或已达到最大结果数量")
+                # 如果没有找到"下一页"链接，则停止翻页
+                if not next_page_link:
+                    print("没有找到'下一页'链接，停止翻页")
                     has_next_page = False
                     break
                 
                 # 获取下一页URL
                 next_page_url = next_page_link["href"]
                 if not next_page_url.startswith("http"):
-                    next_page_url = urljoin(search_url, next_page_url)
+                    next_page_url = urljoin(self.base_url, next_page_url)
+                
+                # 如果在之前没有获取到总记录数，尝试从下一页URL中提取
+                if not total_result:
+                    total_result_match = re.search(r'TotalResult=(\d+)', next_page_url)
+                    if total_result_match:
+                        total_result = int(total_result_match.group(1))
+                        print(f"从URL中获取总记录数: {total_result}")
                 
                 print(f"下一页URL: {next_page_url}")
                 
@@ -174,7 +271,24 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 
                 # 更新页码
                 page_num += 1
-            
+                
+                # 检查当前页是否有内容，如果没有内容则停止翻页
+                content = await self.page.content()
+                soup = BeautifulSoup(content, "html.parser")
+                main_container = (
+                    soup.select_one("ul.posts.clear") or
+                    soup.select_one("ul.posts") or 
+                    soup.select_one("div.posts") or 
+                    soup.select_one("div.box") or 
+                    soup.select_one("div.list") or 
+                    soup.select_one("ul.list")
+                )
+                
+                if not main_container or not (main_container.select("li") or main_container.select("div.post")):
+                    print("当前页没有内容，停止翻页")
+                    has_next_page = False
+                    break
+                
         except Exception as e:
             print(f"搜索过程中发生错误: {str(e)}")
             import traceback
@@ -460,7 +574,18 @@ class YppptPlaywrightScraper(PlaywrightScraper):
         try:
             # 确保已初始化
             if not self.is_initialized:
+                print("爬虫未初始化，正在初始化...")
                 await self.initialize()
+                
+            # 确保页面对象存在
+            if self.page is None:
+                print("页面对象不存在，重新初始化...")
+                await self.initialize()
+                
+            # 再次检查页面对象是否存在
+            if self.page is None:
+                print("无法创建页面对象，放弃获取下载链接")
+                return download_links
             
             # 先从详情页获取标题和日期等信息
             info = await self.get_detail_page_info(detail_url)
@@ -469,67 +594,89 @@ class YppptPlaywrightScraper(PlaywrightScraper):
             download_links["category"] = info["category"]
             
             # 访问详情页
+            print(f"访问详情页: {detail_url}")
             content = await self.get_page_content(detail_url)
             
-            if not content:
-                print("获取详情页内容失败")
-                return download_links
+            # 保存详情页面以便调试
+            with open(os.path.join(self.temp_dir, "detail_page.html"), "w", encoding="utf-8") as f:
+                f.write(content)
             
-            # 解析页面内容
             soup = BeautifulSoup(content, "html.parser")
             
-            # 获取下载按钮链接
-            download_btn = soup.select_one("a.downbtn")
-            if download_btn and download_btn.has_attr("href"):
-                download_url = download_btn.get("href")
-                download_links["local"] = urljoin(self.base_url, download_url)
-                print(f"找到下载链接: {download_links['local']}")
-                
-                # 获取网盘链接
-                netdisk_link = soup.select_one("a.downpan")
-                if netdisk_link and netdisk_link.has_attr("href"):
-                    download_links["netdisk"] = netdisk_link.get("href")
-                    print(f"找到网盘链接: {download_links['netdisk']}")
-                
+            # 查找下载按钮 - div.button中的a标签
+            download_button = soup.select_one("div.button a")
+            if not download_button:
+                # 尝试其他可能的选择器
+                download_button = (
+                    soup.select_one("a.downbtn") or 
+                    soup.select_one("a.download") or
+                    soup.select_one("a[href*='download']")
+                )
+            
+            if not download_button:
+                print("未找到下载按钮")
                 return download_links
             
-            # 如果没有找到下载按钮，查找其他可能的下载链接
-            download_links_found = []
-            for a_tag in soup.find_all("a"):
-                if a_tag.has_attr("href"):
-                    href = a_tag.get("href")
+            # 获取下载页面链接
+            download_page_url = download_button.get("href", "")
+            if not download_page_url.startswith("http"):
+                download_page_url = urljoin(self.base_url, download_page_url)
+            
+            print(f"找到下载页面链接: {download_page_url}")
+            
+            # 访问下载页面
+            print(f"访问下载页面: {download_page_url}")
+            download_page_content = await self.get_page_content(download_page_url)
+            
+            # 保存下载页面以便调试
+            with open(os.path.join(self.temp_dir, "download_page.html"), "w", encoding="utf-8") as f:
+                f.write(download_page_content)
+            
+            download_soup = BeautifulSoup(download_page_content, "html.parser")
+            
+            # 查找最终下载链接 - ul.down.clear中的li中的a标签
+            download_list = download_soup.select_one("ul.down.clear")
+            if not download_list:
+                # 尝试其他可能的选择器
+                download_list = (
+                    download_soup.select_one("ul.down") or
+                    download_soup.select_one("ul.downlist") or
+                    download_soup.select_one("div.downlist")
+                )
+            
+            if download_list:
+                # 查找所有下载链接
+                download_items = download_list.select("li a")
+                if download_items:
+                    # 获取第一个下载链接
+                    download_url = download_items[0].get("href", "")
+                    if download_url and not download_url.startswith("http"):
+                        download_url = urljoin(self.base_url, download_url)
+                    
+                    download_links["local"] = download_url
+                    print(f"找到最终下载链接: {download_url}")
+                    
+                    # 如果有网盘链接，通常在第二个li中
+                    if len(download_items) > 1:
+                        netdisk_url = download_items[1].get("href", "")
+                        if netdisk_url and "pan" in netdisk_url:
+                            download_links["netdisk"] = netdisk_url
+                            print(f"找到网盘下载链接: {netdisk_url}")
+            else:
+                print("未找到下载列表")
+                
+                # 尝试直接查找下载链接
+                for a_tag in download_soup.find_all("a"):
+                    href = a_tag.get("href", "")
                     text = a_tag.text.strip()
                     
-                    if ("下载" in text or "本地" in text) and href and not href.startswith("#") and not href.startswith("javascript:"):
-                        download_links_found.append((href, text))
-                        print(f"找到可能的下载链接: {text} -> {href}")
-            
-            # 从找到的链接中选择最可能的下载链接
-            for href, text in download_links_found:
-                if "本地下载" in text or "免费下载" in text:
-                    download_links["local"] = urljoin(self.base_url, href)
-                    print(f"选择本地下载链接: {download_links['local']}")
-                    break
-            
-            # 如果没有找到特定文本的链接，使用第一个找到的链接
-            if not download_links["local"] and download_links_found:
-                download_links["local"] = urljoin(self.base_url, download_links_found[0][0])
-                print(f"选择第一个下载链接: {download_links['local']}")
-            
-            # 如果仍然没有找到下载链接，尝试使用Playwright直接查找
-            if not download_links["local"]:
-                try:
-                    print("尝试使用Playwright直接查找下载链接...")
-                    await self.page.goto(detail_url, wait_until="domcontentloaded")
-                    download_button = await self.page.query_selector("a.downbtn, a.down_btn, a.download_btn")
-                    if download_button:
-                        href = await download_button.get_attribute("href")
-                        if href:
-                            download_links["local"] = urljoin(self.base_url, href)
-                            print(f"使用Playwright找到下载链接: {download_links['local']}")
-                except Exception as e:
-                    print(f"使用Playwright查找下载链接失败: {str(e)}")
-            
+                    if (href.endswith((".zip", ".rar", ".ppt", ".pptx")) or 
+                        "下载" in text or "本地" in text) and href and not ("javascript:" in href):
+                        download_url = urljoin(self.base_url, href)
+                        download_links["local"] = download_url
+                        print(f"找到可能的下载链接: {download_url}")
+                        break
+                        
         except Exception as e:
             print(f"获取下载链接过程中发生错误: {str(e)}")
             import traceback
@@ -552,19 +699,19 @@ class YppptPlaywrightScraper(PlaywrightScraper):
         try:
             # 确保已初始化
             if not self.is_initialized:
+                print("爬虫未初始化，正在初始化...")
                 await self.initialize()
                 
             # 确保页面对象存在
             if self.page is None:
                 print("页面对象不存在，重新初始化...")
                 await self.initialize()
-            
-            # 判断是否是网盘链接
-            if "pan.baidu" in url or "pan.quark" in url or "lanzou" in url:
-                print(f"网盘下载链接: {url}")
-                print("请手动打开链接下载文件")
-                return False
                 
+            # 再次检查页面对象是否存在
+            if self.page is None:
+                print("无法创建页面对象，放弃下载")
+                return False
+            
             # 处理文件名
             if title:
                 # 从文件路径中提取目录和扩展名
@@ -579,18 +726,8 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 # 构建新的文件路径
                 file_path = os.path.join(dir_name, f"{safe_title}{ext}")
                 print(f"使用标题作为文件名: {file_path}")
-            
+                
             print(f"开始下载文件: {url}")
-            
-            # 设置下载前的引用页
-            await self.page.set_extra_http_headers({
-                "Referer": "https://www.ypppt.com/",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
-            })
-            
-            # 随机延时，模拟人类行为
-            await asyncio.sleep(random.uniform(0.3, 0.8))
             
             # 创建保存文件的目录
             os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
@@ -602,13 +739,13 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 print(f"使用requests直接下载文件: {url}")
                 headers = {
                     "User-Agent": random.choice(self.user_agents),
-                    "Referer": "https://www.ypppt.com/",
+                    "Referer": self.base_url,
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                     "Connection": "keep-alive"
                 }
                 
-                response = requests.get(url, headers=headers, stream=True, timeout=30)
+                response = requests.get(url, headers=headers, stream=True, timeout=20)
                 if response.status_code == 200:
                     # 检查内容类型
                     content_type = response.headers.get('content-type', '')
@@ -619,7 +756,7 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                         print("警告: 响应是HTML页面而不是文件，可能是重定向或错误页面")
                         
                         # 保存HTML内容以便调试
-                        with open("download_response.html", "wb") as f:
+                        with open(os.path.join(self.temp_dir, "download_response.html"), "wb") as f:
                             for chunk in response.iter_content(chunk_size=8192):
                                 if chunk:
                                     f.write(chunk)
@@ -637,7 +774,7 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                                 print(f"从HTML响应中找到真实下载链接: {real_url}")
                                 
                                 # 使用新链接重新下载
-                                new_response = requests.get(real_url, headers=headers, stream=True, timeout=30)
+                                new_response = requests.get(real_url, headers=headers, stream=True, timeout=20)
                                 if new_response.status_code == 200:
                                     total_size = int(new_response.headers.get('content-length', 0))
                                     print(f"文件大小: {total_size / 1024 / 1024:.2f} MB")
@@ -659,10 +796,6 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                     total_size = int(response.headers.get('content-length', 0))
                     print(f"文件大小: {total_size / 1024 / 1024:.2f} MB")
                     
-                    # 检查文件大小是否太小（可能是错误页面）
-                    if total_size < 10000:  # 小于10KB可能是错误页面
-                        print(f"警告: 文件大小太小 ({total_size} 字节)，可能不是有效的PPT文件")
-                    
                     with open(file_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
@@ -682,12 +815,12 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 print("尝试使用Playwright点击下载...")
                 
                 # 等待下载开始
-                async with self.page.expect_download(timeout=30000) as download_info:
+                async with self.page.expect_download(timeout=20000) as download_info:
                     # 先导航到下载页面
-                    await self.page.goto(url)
+                    await self.page.goto(url, wait_until="domcontentloaded")
                     
                     # 等待页面加载
-                    await asyncio.sleep(1)  # 优化：减少等待时间
+                    await asyncio.sleep(0.5)
                     
                     # 检查是否有下载按钮
                     download_button = await self.page.query_selector("a.downbtn, a.download, a[href*='.zip'], a[href*='.rar'], a[href*='.ppt']")
@@ -715,7 +848,7 @@ class YppptPlaywrightScraper(PlaywrightScraper):
             try:
                 print("尝试使用Playwright导航下载...")
                 
-                async with self.page.expect_download(timeout=30000) as download_info:
+                async with self.page.expect_download(timeout=20000) as download_info:
                     # 访问下载链接
                     await self.page.goto(url, wait_until="domcontentloaded")
                 
@@ -731,7 +864,9 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 return False
                 
         except Exception as e:
-            print(f"下载文件过程中发生错误: {str(e)}")
+            print(f"下载过程中发生错误: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
             return False
 
     async def _block_resources(self, route):
