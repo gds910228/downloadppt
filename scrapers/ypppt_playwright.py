@@ -94,7 +94,8 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 # 如果在第一页找不到总记录数，我们需要获取第二页URL来提取
                 if not total_result and len(pagination.select("a")) > 0:
                     for a_tag in pagination.select("a"):
-                        if "下一页" in a_tag.text or ">" in a_tag.text or a_tag.text.strip() == "»":
+                        a_text = a_tag.text.strip()
+                        if "下一页" in a_text or ">" in a_text or a_text == "»" or a_text == "2":
                             next_page_url = a_tag["href"]
                             if not next_page_url.startswith("http"):
                                 next_page_url = urljoin(self.base_url, next_page_url)
@@ -255,44 +256,52 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 # 构建下一页URL
                 page_num += 1
                 
-                # 使用正确的翻页URL格式
+                # 直接构建下一页URL，不依赖页面中的链接
                 if total_result > 0:
                     # 使用标准格式构建翻页URL
                     next_page_url = f"https://www.ypppt.com/p/search.php?keyword={encoded_keyword}&searchtype=titlekeyword&channeltype=0&orderby=&kwtype=1&pagesize={page_size}&typeid=0&TotalResult={total_result}&PageNo={page_num}"
                     print(f"构建翻页URL: {next_page_url}")
                 else:
-                    # 查找"下一页"链接
-                    next_page_link = None
+                    # 查找页面中的所有数字链接和"下一页"链接
                     pagination = soup.select_one(".page, .pages, .pagination")
+                    found_next_page = False
+                    
                     if pagination:
-                        for a_tag in pagination.select("a"):
+                        # 输出分页区域的HTML以便调试
+                        print(f"分页区域HTML: {pagination}")
+                        
+                        # 查找所有分页链接
+                        page_links = pagination.select("a")
+                        print(f"找到 {len(page_links)} 个分页链接")
+                        
+                        # 遍历所有链接，查找数字链接或"下一页"链接
+                        for a_tag in page_links:
                             a_text = a_tag.text.strip()
-                            if "下一页" in a_text or ">" in a_text or a_text == "»":
-                                next_page_link = a_tag
+                            print(f"分页链接文本: '{a_text}'")
+                            
+                            # 检查是否是"下一页"链接或数字链接
+                            if (a_text == "下一页" or 
+                                a_text == ">" or 
+                                a_text == "»" or 
+                                a_text == str(page_num) or
+                                (a_text.isdigit() and int(a_text) == page_num)):
+                                next_page_url = a_tag["href"]
+                                if not next_page_url.startswith("http"):
+                                    next_page_url = urljoin(self.base_url, next_page_url)
+                                found_next_page = True
+                                print(f"找到下一页链接: {next_page_url}")
                                 break
                     
-                    # 如果没有找到"下一页"链接，则停止翻页
-                    if not next_page_link:
-                        print("没有找到'下一页'链接，停止翻页")
-                        has_next_page = False
-                        break
-                    
-                    # 获取下一页URL
-                    next_page_url = next_page_link["href"]
-                    if not next_page_url.startswith("http"):
-                        next_page_url = urljoin(self.base_url, next_page_url)
-                    
-                    # 从URL中提取参数
-                    parsed_url = urlparse(next_page_url)
-                    query_params = parse_qs(parsed_url.query)
-                    
-                    if "TotalResult" in query_params:
-                        total_result = int(query_params["TotalResult"][0])
-                        print(f"从URL中获取总记录数: {total_result}")
-                    
-                    if "pagesize" in query_params:
-                        page_size = int(query_params["pagesize"][0])
-                        print(f"从URL中获取每页显示数量: {page_size}")
+                    # 如果没有找到下一页链接，尝试构建一个
+                    if not found_next_page:
+                        # 如果当前是第一页，尝试构建第二页链接
+                        if page_num == 2:
+                            next_page_url = f"{search_url.replace('kwtype=1&q=', 'keyword=')}&searchtype=titlekeyword&channeltype=0&orderby=&kwtype=1&pagesize=21&typeid=0&PageNo=2"
+                            print(f"构建默认第二页URL: {next_page_url}")
+                        else:
+                            print("没有找到下一页链接，停止翻页")
+                            has_next_page = False
+                            break
                 
                 print(f"下一页URL: {next_page_url}")
                 
