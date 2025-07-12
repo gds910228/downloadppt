@@ -12,7 +12,7 @@ import asyncio
 import re
 import urllib.parse
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, quote
+from urllib.parse import urljoin, quote, parse_qs, urlparse
 from .playwright_scraper import PlaywrightScraper
 
 class YppptPlaywrightScraper(PlaywrightScraper):
@@ -49,10 +49,11 @@ class YppptPlaywrightScraper(PlaywrightScraper):
         """
         results = []
         search_start_time = time.time()
+        encoded_keyword = urllib.parse.quote(keyword)
         
         try:
             # 构建搜索URL
-            search_url = self.search_url.format(urllib.parse.quote(keyword))
+            search_url = self.search_url.format(encoded_keyword)
             
             # 访问搜索页面
             print(f"正在搜索: {search_url}")
@@ -75,6 +76,7 @@ class YppptPlaywrightScraper(PlaywrightScraper):
             has_next_page = True  # 添加标志，表示是否还有下一页
             total_result = 0  # 总记录数
             total_pages = 0   # 总页数
+            page_size = 21    # 默认每页显示数量
             
             # 从第一页解析总记录数和总页数
             soup = BeautifulSoup(content, "html.parser")
@@ -92,16 +94,22 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                 # 如果在第一页找不到总记录数，我们需要获取第二页URL来提取
                 if not total_result and len(pagination.select("a")) > 0:
                     for a_tag in pagination.select("a"):
-                        if "下一页" in a_tag.text or ">" in a_tag.text:
+                        if "下一页" in a_tag.text or ">" in a_tag.text or a_tag.text.strip() == "»":
                             next_page_url = a_tag["href"]
                             if not next_page_url.startswith("http"):
                                 next_page_url = urljoin(self.base_url, next_page_url)
                             
                             # 从URL中提取TotalResult参数
-                            total_result_match = re.search(r'TotalResult=(\d+)', next_page_url)
-                            if total_result_match:
-                                total_result = int(total_result_match.group(1))
+                            parsed_url = urlparse(next_page_url)
+                            query_params = parse_qs(parsed_url.query)
+                            
+                            if "TotalResult" in query_params:
+                                total_result = int(query_params["TotalResult"][0])
                                 print(f"总记录数: {total_result}")
+                            
+                            if "pagesize" in query_params:
+                                page_size = int(query_params["pagesize"][0])
+                                print(f"每页显示: {page_size}")
                             break
             
             while len(results) < max_results and has_next_page:
@@ -244,42 +252,53 @@ class YppptPlaywrightScraper(PlaywrightScraper):
                     has_next_page = False
                     break
                 
-                # 查找"下一页"链接
-                next_page_link = None
-                pagination = soup.select_one(".page, .pages, .pagination")
-                if pagination:
-                    for a_tag in pagination.select("a"):
-                        a_text = a_tag.text.strip()
-                        if "下一页" in a_text or ">" in a_text or a_text == "»":
-                            next_page_link = a_tag
-                            break
+                # 构建下一页URL
+                page_num += 1
                 
-                # 如果没有找到"下一页"链接，则停止翻页
-                if not next_page_link:
-                    print("没有找到'下一页'链接，停止翻页")
-                    has_next_page = False
-                    break
-                
-                # 获取下一页URL
-                next_page_url = next_page_link["href"]
-                if not next_page_url.startswith("http"):
-                    next_page_url = urljoin(self.base_url, next_page_url)
-                
-                # 如果在之前没有获取到总记录数，尝试从下一页URL中提取
-                if not total_result:
-                    total_result_match = re.search(r'TotalResult=(\d+)', next_page_url)
-                    if total_result_match:
-                        total_result = int(total_result_match.group(1))
+                # 使用正确的翻页URL格式
+                if total_result > 0:
+                    # 使用标准格式构建翻页URL
+                    next_page_url = f"https://www.ypppt.com/p/search.php?keyword={encoded_keyword}&searchtype=titlekeyword&channeltype=0&orderby=&kwtype=1&pagesize={page_size}&typeid=0&TotalResult={total_result}&PageNo={page_num}"
+                    print(f"构建翻页URL: {next_page_url}")
+                else:
+                    # 查找"下一页"链接
+                    next_page_link = None
+                    pagination = soup.select_one(".page, .pages, .pagination")
+                    if pagination:
+                        for a_tag in pagination.select("a"):
+                            a_text = a_tag.text.strip()
+                            if "下一页" in a_text or ">" in a_text or a_text == "»":
+                                next_page_link = a_tag
+                                break
+                    
+                    # 如果没有找到"下一页"链接，则停止翻页
+                    if not next_page_link:
+                        print("没有找到'下一页'链接，停止翻页")
+                        has_next_page = False
+                        break
+                    
+                    # 获取下一页URL
+                    next_page_url = next_page_link["href"]
+                    if not next_page_url.startswith("http"):
+                        next_page_url = urljoin(self.base_url, next_page_url)
+                    
+                    # 从URL中提取参数
+                    parsed_url = urlparse(next_page_url)
+                    query_params = parse_qs(parsed_url.query)
+                    
+                    if "TotalResult" in query_params:
+                        total_result = int(query_params["TotalResult"][0])
                         print(f"从URL中获取总记录数: {total_result}")
+                    
+                    if "pagesize" in query_params:
+                        page_size = int(query_params["pagesize"][0])
+                        print(f"从URL中获取每页显示数量: {page_size}")
                 
                 print(f"下一页URL: {next_page_url}")
                 
                 # 访问下一页
                 await self.page.goto(next_page_url, wait_until="domcontentloaded")
                 await asyncio.sleep(1)  # 等待页面加载
-                
-                # 更新页码
-                page_num += 1
                 
                 # 检查当前页是否有内容，如果没有内容则停止翻页
                 content = await self.page.content()
