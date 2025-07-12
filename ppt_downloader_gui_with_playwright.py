@@ -30,7 +30,7 @@ class PPTDownloaderGUI:
         self.site_var = tk.StringVar(value="1PPT")
         self.output_dir_var = tk.StringVar(value="downloads")
         self.status_var = tk.StringVar(value="就绪")
-        self.max_results_var = tk.IntVar(value=40)  # 默认搜索结果数量
+        self.max_results_var = tk.StringVar(value="40")  # 默认搜索结果数量，改为StringVar
         
         # 创建爬虫实例
         self.oneppt_scraper = None
@@ -42,6 +42,9 @@ class PPTDownloaderGUI:
         # 下载状态
         self.is_downloading = False
         
+        # 日志
+        self.log_text = []
+        
         # 创建事件循环
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._start_loop, daemon=True)
@@ -49,9 +52,6 @@ class PPTDownloaderGUI:
         
         # 创建界面
         self.create_widgets()
-        
-        # 日志
-        self.log_text = []
         
         # 关闭窗口时的处理
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -77,7 +77,7 @@ class PPTDownloaderGUI:
         
         # 最大结果数量
         ttk.Label(search_frame, text="结果数量:").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
-        ttk.Combobox(search_frame, textvariable=self.max_results_var, values=[20, 40, 60, 80, 100, 200], width=5, state="readonly").grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
+        ttk.Entry(search_frame, textvariable=self.max_results_var, width=5).grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
         
         # 输出目录
         ttk.Label(search_frame, text="保存目录:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
@@ -95,9 +95,13 @@ class PPTDownloaderGUI:
         # 全选按钮
         ttk.Button(search_frame, text="全选", command=self.select_all).grid(row=1, column=5, padx=5, pady=5, sticky=tk.W)
         
-        # 创建结果表格
-        result_frame = ttk.LabelFrame(self.root, text="搜索结果")
-        result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # 创建主界面面板
+        main_paned = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
+        main_paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # 创建结果表格框架
+        result_frame = ttk.LabelFrame(main_paned, text="搜索结果")
+        main_paned.add(result_frame, weight=3)  # 分配更多空间给结果表格
         
         # 创建表格
         self.result_table = ttk.Treeview(result_frame, columns=("选择", "标题", "日期", "分类", "来源"), show="headings")
@@ -123,11 +127,22 @@ class PPTDownloaderGUI:
         self.result_table.bind("<Double-1>", self.on_item_double_click)
         self.result_table.bind("<ButtonRelease-1>", self.on_item_click)
         
+        # 创建日志框架
+        log_frame = ttk.LabelFrame(main_paned, text="操作日志")
+        main_paned.add(log_frame, weight=1)  # 分配较少空间给日志
+        
+        # 创建日志文本框
+        self.log_text_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, width=80, height=10)
+        self.log_text_widget.pack(fill=tk.BOTH, expand=True)
+        
         # 状态栏
         status_frame = ttk.Frame(self.root)
         status_frame.pack(fill=tk.X, padx=10, pady=5)
         ttk.Label(status_frame, textvariable=self.status_var).pack(side=tk.LEFT)
-
+        
+        # 初始化日志
+        self.init_log()
+    
     def init_log(self):
         """初始化日志"""
         # 获取当前时间
@@ -173,10 +188,11 @@ class PPTDownloaderGUI:
         print(log_message)
         self.log_text.append(log_message)
         
-        # 如果有日志界面，更新日志界面
+        # 更新日志界面
         if hasattr(self, "log_text_widget") and self.log_text_widget:
             self.log_text_widget.insert(tk.END, log_message + "\n")
             self.log_text_widget.see(tk.END)
+            self.root.update_idletasks()  # 立即更新界面
     
     def set_status(self, message):
         """设置状态栏消息"""
@@ -272,107 +288,102 @@ class PPTDownloaderGUI:
     
     def search(self):
         """搜索PPT"""
-        # 使用事件循环执行异步搜索
+        # 禁用搜索按钮，避免重复点击
+        self.search_button.config(state=tk.DISABLED)
+        self.download_button.config(state=tk.DISABLED)
+        
+        # 在事件循环中执行异步搜索
         asyncio.run_coroutine_threadsafe(self._search(), self.loop)
         
     async def _search(self):
-        """异步搜索PPT"""
+        """执行搜索操作"""
+        # 获取搜索参数
         keyword = self.keyword_var.get().strip()
+        site = self.site_var.get()
+        
+        # 检查关键词
         if not keyword:
             messagebox.showwarning("警告", "请输入搜索关键词")
             return
         
-        # 清空结果表格
-        for item in self.result_table.get_children():
-            self.result_table.delete(item)
-        
-        # 设置状态
-        self.search_button.config(state=tk.DISABLED)
-        self.download_button.config(state=tk.DISABLED)
-        self.set_status("正在搜索...")
-        
         # 获取最大结果数量
-        max_results = self.max_results_var.get()
+        max_results_str = self.max_results_var.get()
+        try:
+            max_results = int(max_results_str)
+            if max_results <= 0:
+                messagebox.showwarning("警告", "请输入大于0的数字作为结果数量")
+                return
+        except ValueError:
+            messagebox.showwarning("警告", "请输入有效的数字作为结果数量")
+            return
         
         try:
-            # 选择搜索网站
-            site = self.site_var.get()
-            
+            # 初始化爬虫
             if site == "1PPT":
-                if self.oneppt_scraper is None:
-                    self.log("初始化1PPT爬虫...")
+                if not self.oneppt_scraper:
                     self.oneppt_scraper = OnePptPlaywrightScraper()
+                    await self.oneppt_scraper.initialize()
                 scraper = self.oneppt_scraper
             else:  # 优品PPT
-                if self.ypppt_scraper is None:
-                    self.log("初始化优品PPT爬虫...")
+                if not self.ypppt_scraper:
                     self.ypppt_scraper = YppptPlaywrightScraper()
+                    await self.ypppt_scraper.initialize()
                 scraper = self.ypppt_scraper
             
-            # 搜索
-            self.log(f"正在搜索: {keyword} (网站: {site}, 最大结果数: {max_results})")
+            # 清空结果表格
+            for item in self.result_table.get_children():
+                self.result_table.delete(item)
+            
+            # 设置状态
+            self.set_status(f"正在搜索 {keyword}...")
+            
+            # 执行搜索
+            self.log(f"开始搜索: {site} - {keyword} (最大结果数: {max_results})")
             results = await scraper.search(keyword, max_results=max_results)
+            self.log(f"搜索完成，找到 {len(results)} 个结果")
             
             # 显示结果
-            self.search_results = results
-            self.log(f"找到 {len(results)} 个结果")
+            await self.display_results(results)
             
-            for i, result in enumerate(results):
-                # 添加到表格
-                self.result_table.insert("", tk.END, values=(
-                    "□",
-                    result["title"],
-                    result["date"],
-                    result["category"],
-                    result["source"]
-                ))
-            
+            # 设置状态
             self.set_status(f"搜索完成，找到 {len(results)} 个结果")
-            
         except Exception as e:
             self.log(f"搜索过程中发生错误: {str(e)}")
             import traceback
             self.log(traceback.format_exc())
-            self.set_status("搜索出错")
-        finally:
-            # 恢复按钮状态
-            self.search_button.config(state=tk.NORMAL)
-            self.download_button.config(state=tk.NORMAL)
+            self.set_status("搜索失败")
+            messagebox.showerror("错误", f"搜索失败: {str(e)}")
+            
+        # 启用按钮
+        self.search_button.config(state=tk.NORMAL)
     
     async def display_results(self, results):
-        """
-        显示搜索结果
+        """显示搜索结果"""
+        # 保存搜索结果
+        self.search_results = results
         
-        Args:
-            results (list): 搜索结果列表
-        """
-        # 清空现有结果
+        # 清空表格
         for item in self.result_table.get_children():
             self.result_table.delete(item)
         
-        self.search_results = results
-        
-        # 添加新结果
-        for i, result in enumerate(results):
-            # 准备表格数据
-            item_data = (
-                "✓",  # 默认选中
-                result.get("title", ""),  # 标题
-                result.get("source", ""),  # 来源
-                result.get("date", ""),  # 日期
-                result.get("category", "")  # 分类
-            )
-            
-            # 插入表格
-            self.result_table.insert("", "end", values=item_data)
-            
-            # 如果有缩略图，可以在日志中显示
-            if "thumbnail" in result and result["thumbnail"]:
-                self.log(f"结果 {i+1} 缩略图: {result['thumbnail']}")
+        # 添加结果到表格
+        for result in results:
+            # 跳过空标题或无效链接
+            if not result["title"] or not result["url"] or "51miz.com" in result["url"] or "ibaotu.com" in result["url"]:
+                continue
                 
-        # 更新全选按钮状态
-        self.select_all_var.set(True)
+            # 添加到表格
+            self.result_table.insert("", tk.END, values=(
+                "□",  # 默认未选中
+                result["title"],
+                result["date"],
+                result["category"],
+                result["source"]
+            ))
         
+        # 启用下载按钮
+        self.download_button.config(state=tk.NORMAL)
+    
     def download(self):
         """下载选中的PPT"""
         # 使用事件循环执行异步下载
@@ -388,6 +399,8 @@ class PPTDownloaderGUI:
         
         if not selected_items:
             messagebox.showwarning("警告", "请选择要下载的PPT")
+            self.download_button.config(state=tk.NORMAL)
+            self.search_button.config(state=tk.NORMAL)
             return
         
         # 获取输出目录
@@ -405,129 +418,89 @@ class PPTDownloaderGUI:
             # 下载选中的PPT
             download_count = 0
             
-            for item in selected_items:
-                item_index = self.result_table.index(item)
+            for item_id in selected_items:
+                # 获取项目索引
+                item_index = self.result_table.index(item_id)
+                
+                # 获取结果数据
                 result = self.search_results[item_index]
                 
-                # 检查是否已经下载过（状态中包含"已下载"）
-                current_status = self.result_table.item(item, "values")[0]
-                if "已下载" in current_status:
-                    self.log(f"跳过已下载的项目: {result['title']}")
-                    continue
-                
-                self.log(f"\n正在下载: {result['title']} ({result['source']})")
-                self.log(f"详情页URL: {result['url']}")
+                # 获取下载链接
+                self.set_status(f"正在获取下载链接: {result['title']}")
+                self.log(f"正在获取下载链接: {result['url']}")
                 
                 # 根据来源选择爬虫
-                if result['source'] == "1PPT":
-                    if self.oneppt_scraper is None:
-                        self.log("初始化1PPT爬虫...")
-                        self.oneppt_scraper = OnePptPlaywrightScraper()
+                if result["source"] == "1PPT":
                     scraper = self.oneppt_scraper
-                else:  # 优品PPT
-                    if self.ypppt_scraper is None:
-                        self.log("初始化优品PPT爬虫...")
-                        self.ypppt_scraper = YppptPlaywrightScraper()
+                else:
                     scraper = self.ypppt_scraper
                 
+                # 获取详情页信息
+                detail_info = await scraper.get_detail_page_info(result["url"])
+                
+                # 更新标题（如果详情页有更准确的标题）
+                if detail_info["title"]:
+                    result["title"] = detail_info["title"]
+                    self.log(f"更新标题: {result['title']}")
+                
+                # 更新日期（如果详情页有日期）
+                if detail_info["date"]:
+                    result["date"] = detail_info["date"]
+                
                 # 获取下载链接
-                self.log("正在获取下载链接...")
-                download_links = await scraper.get_download_links(result['url'])
+                download_links = await scraper.get_download_links(result["url"])
                 
-                # 更新结果中的标题和日期（如果下载链接中有更详细的信息）
-                if download_links['title'] and download_links['title'] != result['title']:
-                    self.log(f"更新标题: {download_links['title']}")
-                    result['title'] = download_links['title']
-                    self.result_table.set(item, "标题", result['title'])
-                
-                if download_links['date'] and download_links['date'] != result['date']:
-                    self.log(f"更新日期: {download_links['date']}")
-                    result['date'] = download_links['date']
-                    self.result_table.set(item, "日期", result['date'])
-                
-                if download_links['category'] and download_links['category'] != result['category']:
-                    self.log(f"更新分类: {download_links['category']}")
-                    result['category'] = download_links['category']
-                    self.result_table.set(item, "分类", result['category'])
-                
-                self.log(f"获取到的下载链接: 本地链接={download_links['local']}, 网盘链接={download_links['netdisk']}")
-                
-                # 优先使用本地下载链接，如果没有则使用网盘链接
-                download_url = download_links['local'] or download_links['netdisk']
-                
-                if not download_url:
-                    self.log(f"未找到下载链接，跳过")
+                # 如果没有本地下载链接，跳过
+                if not download_links["local"]:
+                    self.log(f"未找到下载链接: {result['title']}")
                     continue
                 
-                # 构建文件名（使用详情页获取的标题）
-                title = download_links['title'] or result['title']
-                if title:
-                    file_name = f"{title}.zip"
-                else:
-                    file_name = f"{os.path.basename(result['url']).split('.')[0]}.zip"
-                
+                # 构建保存路径
+                file_name = f"{result['title']}.zip"
                 # 替换文件名中的非法字符
                 file_name = file_name.replace('/', '_').replace('\\', '_').replace(':', '_').replace('*', '_').replace('?', '_').replace('"', '_').replace('<', '_').replace('>', '_').replace('|', '_')
                 file_path = os.path.join(output_dir, file_name)
                 
-                self.log(f"开始下载文件: {download_url}")
-                self.log(f"保存到: {file_path}")
+                # 下载文件
+                self.set_status(f"正在下载: {result['title']}")
+                self.log(f"正在下载: {download_links['local']} -> {file_path}")
                 
-                # 下载文件，传递标题参数
-                success = await scraper.download(download_url, file_path, title=title)
+                # 执行下载
+                success = await scraper.download(download_links["local"], file_path, result["title"])
                 
                 if success:
                     download_count += 1
                     self.log(f"下载成功: {file_path}")
-                    # 更新表格中的状态
-                    self.result_table.set(item, "选择", "✓ (已下载)")
-                    self.root.update_idletasks()
                 else:
-                    self.log(f"下载失败: {download_url}")
-                    # 更新表格中的状态
-                    self.result_table.set(item, "选择", "✓ (下载失败)")
-                    self.root.update_idletasks()
-                    
-                    # 如果是网盘链接，保存到文件中
-                    if "pan.baidu" in download_url or "quark" in download_url:
-                        netdisk_file = os.path.join(output_dir, f"{title}_网盘链接.txt")
-                        with open(netdisk_file, "w", encoding="utf-8") as f:
-                            f.write(f"标题: {title}\n")
-                            f.write(f"网盘链接: {download_url}\n")
-                        self.log(f"网盘链接已保存到: {netdisk_file}")
+                    self.log(f"下载失败: {result['title']}")
             
-            self.log(f"\n下载完成! 文件保存在: {os.path.abspath(output_dir)}")
-            self.log(f"共下载 {download_count} 个PPT文件")
-            
-            # 保存日志到输出目录
+            # 保存日志
             log_path = self.save_log(output_dir)
             
-            # 下载完成后打开目录
-            if download_count > 0:
-                import webbrowser
-                webbrowser.open(f"file://{os.path.abspath(output_dir)}")
+            # 设置状态
+            self.set_status(f"下载完成，成功 {download_count}/{len(selected_items)} 个")
             
+            # 显示完成消息
+            if download_count > 0:
+                messagebox.showinfo("下载完成", f"成功下载 {download_count} 个PPT")
+                
+                # 打开下载目录
+                try:
+                    os.startfile(output_dir)
+                except:
+                    pass
         except Exception as e:
             self.log(f"下载过程中发生错误: {str(e)}")
             import traceback
             self.log(traceback.format_exc())
+            self.set_status("下载失败")
+            messagebox.showerror("错误", f"下载失败: {str(e)}")
         finally:
             # 恢复状态
             self.is_downloading = False
             self.download_button.config(state=tk.NORMAL)
             self.search_button.config(state=tk.NORMAL)
-            self.set_status("下载完成")
-
-    async def close_scrapers(self):
-        """关闭爬虫实例"""
-        try:
-            if self.oneppt_scraper:
-                await self.oneppt_scraper.close()
-            if self.ypppt_scraper:
-                await self.ypppt_scraper.close()
-        except Exception as e:
-            self.log(f"关闭爬虫时发生错误: {str(e)}")
-            
+    
     def select_all(self):
         """全选所有项目"""
         for item in self.result_table.get_children():
@@ -575,7 +548,16 @@ class PPTDownloaderGUI:
         
         # 关闭爬虫
         try:
-            asyncio.run_coroutine_threadsafe(self.close_scrapers(), self.loop)
+            # 使用同步方式关闭爬虫
+            if hasattr(self, 'oneppt_scraper') and self.oneppt_scraper:
+                future = asyncio.run_coroutine_threadsafe(self.oneppt_scraper.close(), self.loop)
+                future.result(timeout=2.0)
+            
+            if hasattr(self, 'ypppt_scraper') and self.ypppt_scraper:
+                future = asyncio.run_coroutine_threadsafe(self.ypppt_scraper.close(), self.loop)
+                future.result(timeout=2.0)
+            
+            # 停止事件循环
             self.loop.call_soon_threadsafe(self.loop.stop)
             self.thread.join(timeout=1.0)
         except Exception as e:

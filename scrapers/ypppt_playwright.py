@@ -53,121 +53,128 @@ class YppptPlaywrightScraper(PlaywrightScraper):
             
             # 获取搜索结果
             page_num = 1
-            while len(results) < max_results:
+            has_next_page = True  # 添加标志，表示是否还有下一页
+            
+            while len(results) < max_results and has_next_page:
                 print(f"正在获取第 {page_num} 页搜索结果...")
                 
                 # 等待搜索结果加载
-                await self.page.wait_for_selector("div.posts", timeout=10000)
+                try:
+                    await self.page.wait_for_selector("div.posts, div.box, div.list, ul.list", timeout=5000)
+                except Exception as e:
+                    print(f"等待选择器失败: {str(e)}")
                 
-                # 获取页面标题，验证是否是搜索结果页
-                page_title = await self.page.title()
-                print(f"页面标题: {page_title}")
-                
-                # 获取搜索结果列表
+                # 获取页面内容
                 content = await self.page.content()
+                
+                # 保存当前页面内容以便调试
+                with open(f"search_result_ypppt_page{page_num}.html", "w", encoding="utf-8") as f:
+                    f.write(content)
+                
                 soup = BeautifulSoup(content, "html.parser")
                 
                 # 查找主容器
-                main_container = soup.select_one("div.posts")
+                main_container = (
+                    soup.select_one("div.posts") or 
+                    soup.select_one("div.box") or 
+                    soup.select_one("div.list") or 
+                    soup.select_one("ul.list")
+                )
+                
                 if main_container:
-                    print("找到主容器 div.posts")
+                    print(f"找到主容器: {main_container.name}.{' '.join(main_container.get('class', []))}")
                     
                     # 查找所有列表项
-                    list_items = main_container.select("li.post")
+                    list_items = main_container.select("li") or main_container.select("div.post")
                     print(f"找到 {len(list_items)} 个列表项")
                     
                     # 处理每个列表项
                     for item in list_items:
                         if len(results) >= max_results:
                             break
-                            
+                        
                         # 获取标题和链接
-                        title_elem = item.select_one("h2.entry-title a")
+                        title_elem = item.select_one("h2") or item.select_one("h3") or item.select_one("a")
                         if title_elem:
-                            title = title_elem.text.strip()
-                            print(f"获取标题: {title[:20]}")
+                            # 获取标题
+                            if title_elem.name in ["h2", "h3"]:
+                                link_elem = title_elem.select_one("a")
+                                title = title_elem.text.strip()
+                            else:
+                                link_elem = title_elem
+                                title = title_elem.text.strip() or title_elem.get("title", "").strip()
+                            
+                            # 跳过空白标题或广告链接
+                            if not title or "广告" in title or "ad" in str(item).lower():
+                                print(f"跳过空白标题或广告链接")
+                                continue
+                                
+                            print(f"找到标题: {title[:30]}")
                             
                             # 获取链接
-                            url = title_elem.get("href", "")
-                            if not url.startswith("http"):
-                                url = f"https://www.ypppt.com{url}"
-                            
-                            # 获取日期和分类
-                            date_elem = item.select_one("span.entry-date")
-                            date = date_elem.text.strip() if date_elem else ""
-                            
-                            category_elem = item.select_one("span.entry-category a")
-                            category = category_elem.text.strip() if category_elem else ""
-                            
-                            # 添加到结果列表
-                            results.append({
-                                "title": title,
-                                "url": url,
-                                "date": date,
-                                "category": category,
-                                "source": "优品PPT"
-                            })
+                            if link_elem and "href" in link_elem.attrs:
+                                url = link_elem["href"]
+                                if not url.startswith("http"):
+                                    url = f"https://www.ypppt.com{url}"
+                                
+                                # 跳过广告链接
+                                if "ad" in url.lower() or "51miz.com" in url or "ibaotu.com" in url:
+                                    print(f"跳过广告链接: {url}")
+                                    continue
+                                    
+                                print(f"找到链接: {url}")
+                                
+                                # 获取日期和分类
+                                date = ""
+                                date_elem = item.select_one(".date") or item.select_one(".time")
+                                if date_elem:
+                                    date = date_elem.text.strip()
+                                
+                                category = ""
+                                category_elem = item.select_one(".category") or item.select_one(".cat")
+                                if category_elem:
+                                    category = category_elem.text.strip()
+                                
+                                # 添加到结果列表
+                                results.append({
+                                    "title": title,
+                                    "url": url,
+                                    "date": date,
+                                    "category": category,
+                                    "source": "优品PPT"
+                                })
+                else:
+                    print("未找到主容器")
                 
                 # 检查是否有下一页
-                next_page = soup.select_one("div.pagination a.next")
-                if not next_page or page_num * 20 >= max_results:  # 优品PPT每页约20条
-                    # 没有下一页或已达到最大结果数量
+                next_page_link = None
+                
+                # 查找"下一页"链接
+                for a_tag in soup.select(".page a, .pages a, .pagination a"):
+                    if "下一页" in a_tag.text or ">" in a_tag.text:
+                        next_page_link = a_tag
+                        break
+                
+                # 如果没有找到"下一页"链接或者已经达到最大结果数量，则停止翻页
+                if not next_page_link or len(results) >= max_results:
+                    print("没有下一页或已达到最大结果数量")
+                    has_next_page = False
                     break
                 
-                # 点击下一页
-                try:
-                    next_page_link = await self.page.query_selector("div.pagination a.next")
-                    if next_page_link:
-                        print(f"点击下一页，当前已获取 {len(results)} 条结果")
-                        await next_page_link.click()
-                        await self.page.wait_for_load_state("domcontentloaded")
-                        page_num += 1
-                        # 等待一下，避免被反爬
-                        await asyncio.sleep(1)
-                    else:
-                        print("未找到下一页链接")
-                        break
-                except Exception as e:
-                    print(f"点击下一页时出错: {str(e)}")
-                    break
+                # 获取下一页URL
+                next_page_url = next_page_link["href"]
+                if not next_page_url.startswith("http"):
+                    next_page_url = urljoin(search_url, next_page_url)
+                
+                print(f"下一页URL: {next_page_url}")
+                
+                # 访问下一页
+                await self.page.goto(next_page_url, wait_until="domcontentloaded")
+                await asyncio.sleep(1)  # 等待页面加载
+                
+                # 更新页码
+                page_num += 1
             
-            # 使用备用解析方法
-            if not results:
-                print("尝试使用备用解析方法...")
-                
-                # 等待搜索结果加载
-                await self.page.wait_for_selector("div.box", timeout=10000)
-                
-                # 获取页面内容
-                content = await self.page.content()
-                soup = BeautifulSoup(content, "html.parser")
-                
-                # 查找所有结果项
-                result_items = soup.select("div.box ul li")
-                print(f"通过备用解析方法找到 {len(result_items)} 个结果")
-                
-                # 处理每个结果项
-                for item in result_items:
-                    if len(results) >= max_results:
-                        break
-                    
-                    # 获取标题和链接
-                    title_elem = item.select_one("a")
-                    if title_elem:
-                        title = title_elem.text.strip()
-                        url = title_elem.get("href", "")
-                        
-                        if not url.startswith("http"):
-                            url = f"https://www.ypppt.com{url}"
-                        
-                        # 添加到结果列表
-                        results.append({
-                            "title": title,
-                            "url": url,
-                            "date": "",
-                            "category": "",
-                            "source": "优品PPT"
-                        })
         except Exception as e:
             print(f"搜索过程中发生错误: {str(e)}")
             import traceback

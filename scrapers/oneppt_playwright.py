@@ -74,7 +74,9 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
             
             # 获取搜索结果
             page_num = 1
-            while len(results) < max_results:
+            has_next_page = True  # 添加标志，表示是否还有下一页
+            
+            while len(results) < max_results and has_next_page:
                 print(f"正在获取第 {page_num} 页搜索结果...")
                 
                 # 等待搜索结果加载
@@ -138,6 +140,11 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                                 link_elem = title_elem
                                 title = title_elem.text.strip()
                             
+                            # 跳过空白标题或广告链接
+                            if not title or "51miz.com" in str(item) or "ibaotu.com" in str(item):
+                                print(f"跳过空白标题或广告链接")
+                                continue
+                            
                             print(f"找到标题: {title[:30]}")
                             
                             # 获取链接
@@ -145,6 +152,11 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                                 url = link_elem["href"]
                                 if not url.startswith("http"):
                                     url = f"https://www.1ppt.com{url}"
+                                
+                                # 跳过广告链接
+                                if "51miz.com" in url or "ibaotu.com" in url:
+                                    print(f"跳过广告链接: {url}")
+                                    continue
                                 
                                 print(f"找到链接: {url}")
                                 
@@ -164,10 +176,18 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                     print("未找到主容器")
                 
                 # 检查是否有下一页
-                next_page = soup.select_one("div.page a:contains('下一页')") or soup.select_one("ul.pages a:contains('下一页')")
-                if not next_page or page_num * 24 >= max_results:
-                    # 没有下一页或已达到最大结果数量
+                next_page_link = None
+                
+                # 查找"下一页"链接
+                for a_tag in soup.select("div.page a, ul.pages a"):
+                    if "下一页" in a_tag.text:
+                        next_page_link = a_tag
+                        break
+                
+                # 如果没有找到"下一页"链接或者已经达到最大结果数量，则停止翻页
+                if not next_page_link or len(results) >= max_results:
                     print("没有下一页或已达到最大结果数量")
+                    has_next_page = False
                     break
                 
                 # 从页面中提取TotalResult参数
@@ -177,8 +197,14 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                     page_text = page_info.text
                     match = re.search(r'共(\d+)页/(\d+)条', page_text)
                     if match:
+                        total_pages = int(match.group(1))
                         total_result = int(match.group(2))
-                        print(f"总结果数: {total_result}")
+                        print(f"总页数: {total_pages}, 总结果数: {total_result}")
+                        
+                        # 如果已经是最后一页，则停止翻页
+                        if page_num >= total_pages:
+                            has_next_page = False
+                            break
                 
                 # 构建下一页URL
                 page_num += 1
