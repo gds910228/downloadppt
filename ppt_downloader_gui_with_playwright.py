@@ -20,128 +20,114 @@ from scrapers.ypppt_playwright import YppptPlaywrightScraper
 
 class PPTDownloaderGUI:
     def __init__(self, root):
+        """初始化GUI"""
         self.root = root
         self.root.title("PPT下载器 (Playwright版)")
-        self.root.geometry("800x700")
-        self.root.resizable(True, True)
+        self.root.geometry("1000x600")
         
-        # 初始化变量
-        self.search_results = []
-        self.is_searching = False
-        self.is_downloading = False
+        # 设置变量
+        self.keyword_var = tk.StringVar()
+        self.site_var = tk.StringVar(value="1PPT")
+        self.output_dir_var = tk.StringVar(value="downloads")
+        self.status_var = tk.StringVar(value="就绪")
+        self.max_results_var = tk.IntVar(value=40)  # 默认搜索结果数量
+        
+        # 创建爬虫实例
         self.oneppt_scraper = None
         self.ypppt_scraper = None
         
-        # 创建事件循环和线程
+        # 搜索结果
+        self.search_results = []
+        
+        # 下载状态
+        self.is_downloading = False
+        
+        # 创建事件循环
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._start_loop, daemon=True)
         self.thread.start()
         
-        # 日志文件路径
-        self.log_file_path = ""
-        
-        # 创建界面组件
+        # 创建界面
         self.create_widgets()
         
-        # 初始化日志
-        self.init_log()
+        # 日志
+        self.log_text = []
+        
+        # 关闭窗口时的处理
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
     def _start_loop(self):
         """在单独的线程中启动事件循环"""
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
-        
+
     def create_widgets(self):
         """创建界面组件"""
-        # 创建搜索框架
+        # 创建顶部搜索框架
         search_frame = ttk.LabelFrame(self.root, text="搜索设置")
-        search_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # 第一行：搜索关键词
-        ttk.Label(search_frame, text="搜索关键词:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.keyword_entry = ttk.Entry(search_frame, width=30)
-        self.keyword_entry.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        # 关键词输入
+        ttk.Label(search_frame, text="关键词:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Entry(search_frame, textvariable=self.keyword_var, width=30).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
         
-        # 第一行右侧：搜索网站选择
-        ttk.Label(search_frame, text="搜索网站:").grid(row=0, column=2, padx=5, pady=5, sticky="w")
-        self.source_var = tk.StringVar(value="1PPT")
-        source_combobox = ttk.Combobox(search_frame, textvariable=self.source_var, values=["1PPT", "优品PPT"], state="readonly", width=15)
-        source_combobox.grid(row=0, column=3, padx=5, pady=5, sticky="w")
+        # 网站选择
+        ttk.Label(search_frame, text="网站:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        ttk.Combobox(search_frame, textvariable=self.site_var, values=["1PPT", "优品PPT"], width=10, state="readonly").grid(row=0, column=3, padx=5, pady=5, sticky=tk.W)
         
-        # 第二行：最大结果数
-        ttk.Label(search_frame, text="最大结果数:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.max_results_var = tk.StringVar(value="10")
-        max_results_spinbox = ttk.Spinbox(search_frame, from_=1, to=50, textvariable=self.max_results_var, width=5)
-        max_results_spinbox.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        # 最大结果数量
+        ttk.Label(search_frame, text="结果数量:").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
+        ttk.Combobox(search_frame, textvariable=self.max_results_var, values=[20, 40, 60, 80, 100, 200], width=5, state="readonly").grid(row=0, column=5, padx=5, pady=5, sticky=tk.W)
         
-        # 第二行右侧：保存目录
-        ttk.Label(search_frame, text="保存目录:").grid(row=1, column=2, padx=5, pady=5, sticky="w")
-        self.output_dir_var = tk.StringVar(value="downloads")
-        output_dir_entry = ttk.Entry(search_frame, textvariable=self.output_dir_var, width=30)
-        output_dir_entry.grid(row=1, column=3, padx=5, pady=5, sticky="w")
-        ttk.Button(search_frame, text="选择...", command=self.browse_output_dir).grid(row=1, column=4, padx=5, pady=5)
+        # 输出目录
+        ttk.Label(search_frame, text="保存目录:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Entry(search_frame, textvariable=self.output_dir_var, width=30).grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        ttk.Button(search_frame, text="浏览...", command=self.browse_output_dir).grid(row=1, column=2, padx=5, pady=5, sticky=tk.W)
         
-        # 第三行：搜索按钮
-        self.search_button = ttk.Button(search_frame, text="搜索", command=lambda: asyncio.run_coroutine_threadsafe(self.search(), self.loop))
-        self.search_button.grid(row=2, column=0, columnspan=5, pady=10)
-        
-        # 创建搜索结果框架
-        result_frame = ttk.LabelFrame(self.root, text="搜索结果")
-        result_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # 创建搜索结果表格
-        columns = ("选择", "标题", "来源", "日期", "分类")
-        self.result_table = ttk.Treeview(result_frame, columns=columns, show="headings", selectmode="extended")
-        
-        # 设置列宽
-        self.result_table.column("选择", width=80, anchor="center")
-        self.result_table.column("标题", width=300, anchor="w")
-        self.result_table.column("来源", width=80, anchor="center")
-        self.result_table.column("日期", width=120, anchor="center")
-        self.result_table.column("分类", width=150, anchor="w")
-        
-        # 设置表头
-        for col in columns:
-            self.result_table.heading(col, text=col)
-        
-        # 添加滚动条
-        scrollbar = ttk.Scrollbar(result_frame, orient="vertical", command=self.result_table.yview)
-        self.result_table.configure(yscroll=scrollbar.set)
-        
-        # 放置表格和滚动条
-        self.result_table.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # 添加表格点击事件
-        self.result_table.bind("<Button-1>", self.on_table_click)
-        self.result_table.bind("<Double-1>", self.on_result_double_click)
-        
-        # 底部按钮框架
-        button_frame = ttk.Frame(self.root)
-        button_frame.pack(fill="x", padx=10, pady=10)
-        
-        # 全选复选框
-        self.select_all_var = tk.BooleanVar(value=False)
-        select_all_check = ttk.Checkbutton(button_frame, text="全选", variable=self.select_all_var, command=self.toggle_select_all)
-        select_all_check.pack(side="left", padx=5)
+        # 搜索按钮
+        self.search_button = ttk.Button(search_frame, text="搜索", command=self.search)
+        self.search_button.grid(row=1, column=3, padx=5, pady=5, sticky=tk.W)
         
         # 下载按钮
-        self.download_button = ttk.Button(button_frame, text="下载选中项", command=lambda: asyncio.run_coroutine_threadsafe(self.download(), self.loop))
-        self.download_button.pack(side="right", padx=5)
+        self.download_button = ttk.Button(search_frame, text="下载选中项", command=self.download)
+        self.download_button.grid(row=1, column=4, padx=5, pady=5, sticky=tk.W)
         
-        # 日志框架
-        log_frame = ttk.LabelFrame(self.root, text="日志")
-        log_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # 全选按钮
+        ttk.Button(search_frame, text="全选", command=self.select_all).grid(row=1, column=5, padx=5, pady=5, sticky=tk.W)
         
-        # 创建日志文本框
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=10)
-        self.log_text.pack(fill="both", expand=True)
+        # 创建结果表格
+        result_frame = ttk.LabelFrame(self.root, text="搜索结果")
+        result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # 创建表格
+        self.result_table = ttk.Treeview(result_frame, columns=("选择", "标题", "日期", "分类", "来源"), show="headings")
+        self.result_table.heading("选择", text="选择")
+        self.result_table.heading("标题", text="标题")
+        self.result_table.heading("日期", text="日期")
+        self.result_table.heading("分类", text="分类")
+        self.result_table.heading("来源", text="来源")
+        
+        self.result_table.column("选择", width=50, anchor=tk.CENTER)
+        self.result_table.column("标题", width=500)
+        self.result_table.column("日期", width=100, anchor=tk.CENTER)
+        self.result_table.column("分类", width=100, anchor=tk.CENTER)
+        self.result_table.column("来源", width=80, anchor=tk.CENTER)
+        
+        # 添加滚动条
+        scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.result_table.yview)
+        self.result_table.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.result_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # 绑定点击事件
+        self.result_table.bind("<Double-1>", self.on_item_double_click)
+        self.result_table.bind("<ButtonRelease-1>", self.on_item_click)
         
         # 状态栏
-        self.status_var = tk.StringVar(value="就绪")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w")
-        status_bar.pack(side="bottom", fill="x")
-    
+        status_frame = ttk.Frame(self.root)
+        status_frame.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(status_frame, textvariable=self.status_var).pack(side=tk.LEFT)
+
     def init_log(self):
         """初始化日志"""
         # 获取当前时间
@@ -156,24 +142,24 @@ class PPTDownloaderGUI:
         self.log(f"日志文件: {self.log_file_path}")
         
     def save_log(self, output_dir):
-        """
-        保存日志到指定目录
-        
-        Args:
-            output_dir (str): 保存目录
-        """
+        """保存日志到文件"""
         try:
             # 确保目录存在
             os.makedirs(output_dir, exist_ok=True)
             
-            # 获取日志内容
-            log_content = self.log_text.get("1.0", tk.END)
+            # 获取当前时间
+            now = datetime.datetime.now()
+            timestamp = now.strftime("%Y%m%d_%H%M%S")
             
-            # 保存日志文件
-            log_path = os.path.join(output_dir, self.log_file_path)
+            # 创建日志文件名
+            log_file_name = f"ppt_download_log_{timestamp}.txt"
+            log_path = os.path.join(output_dir, log_file_name)
+            
+            # 保存日志内容
             with open(log_path, "w", encoding="utf-8") as f:
-                f.write(log_content)
-                
+                for log_line in self.log_text:
+                    f.write(log_line + "\n")
+            
             self.log(f"日志已保存到: {log_path}")
             return log_path
         except Exception as e:
@@ -181,32 +167,19 @@ class PPTDownloaderGUI:
             return None
     
     def log(self, message):
-        """
-        添加日志消息
+        """记录日志"""
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_message = f"[{timestamp}] {message}"
+        print(log_message)
+        self.log_text.append(log_message)
         
-        Args:
-            message (str): 日志消息
-        """
-        # 获取当前时间
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 格式化日志消息
-        log_message = f"[{now}] {message}\n"
-        
-        # 添加到日志文本框
-        self.log_text.insert(tk.END, log_message)
-        self.log_text.see(tk.END)
-        
-        # 更新GUI
-        self.root.update_idletasks()
+        # 如果有日志界面，更新日志界面
+        if hasattr(self, "log_text_widget") and self.log_text_widget:
+            self.log_text_widget.insert(tk.END, log_message + "\n")
+            self.log_text_widget.see(tk.END)
     
     def set_status(self, message):
-        """
-        设置状态栏消息
-        
-        Args:
-            message (str): 状态消息
-        """
+        """设置状态栏消息"""
         self.status_var.set(message)
         self.root.update_idletasks()
     
@@ -297,38 +270,35 @@ class PPTDownloaderGUI:
         # 更新全选复选框状态
         self.select_all_var.set(all_selected)
     
-    async def search(self):
+    def search(self):
         """搜索PPT"""
-        # 获取搜索关键词
-        keyword = self.keyword_entry.get().strip()
+        # 使用事件循环执行异步搜索
+        asyncio.run_coroutine_threadsafe(self._search(), self.loop)
+        
+    async def _search(self):
+        """异步搜索PPT"""
+        keyword = self.keyword_var.get().strip()
         if not keyword:
             messagebox.showwarning("警告", "请输入搜索关键词")
             return
         
-        # 获取最大结果数
-        try:
-            max_results = int(self.max_results_var.get())
-            if max_results <= 0:
-                raise ValueError("最大结果数必须大于0")
-        except ValueError:
-            messagebox.showwarning("警告", "请输入有效的最大结果数")
-            return
-        
-        # 获取搜索网站
-        source = self.source_var.get()
+        # 清空结果表格
+        for item in self.result_table.get_children():
+            self.result_table.delete(item)
         
         # 设置状态
-        self.is_searching = True
         self.search_button.config(state=tk.DISABLED)
         self.download_button.config(state=tk.DISABLED)
         self.set_status("正在搜索...")
         
-        # 记录搜索日志
-        self.log(f"开始搜索: {keyword} (网站: {source}, 最大结果数: {max_results})")
+        # 获取最大结果数量
+        max_results = self.max_results_var.get()
         
         try:
-            # 根据来源选择爬虫
-            if source == "1PPT":
+            # 选择搜索网站
+            site = self.site_var.get()
+            
+            if site == "1PPT":
                 if self.oneppt_scraper is None:
                     self.log("初始化1PPT爬虫...")
                     self.oneppt_scraper = OnePptPlaywrightScraper()
@@ -339,24 +309,35 @@ class PPTDownloaderGUI:
                     self.ypppt_scraper = YppptPlaywrightScraper()
                 scraper = self.ypppt_scraper
             
-            # 搜索PPT
-            self.log("正在访问搜索页面...")
+            # 搜索
+            self.log(f"正在搜索: {keyword} (网站: {site}, 最大结果数: {max_results})")
             results = await scraper.search(keyword, max_results=max_results)
             
-            # 显示搜索结果
+            # 显示结果
+            self.search_results = results
             self.log(f"找到 {len(results)} 个结果")
-            await self.display_results(results)
+            
+            for i, result in enumerate(results):
+                # 添加到表格
+                self.result_table.insert("", tk.END, values=(
+                    "□",
+                    result["title"],
+                    result["date"],
+                    result["category"],
+                    result["source"]
+                ))
+            
+            self.set_status(f"搜索完成，找到 {len(results)} 个结果")
             
         except Exception as e:
             self.log(f"搜索过程中发生错误: {str(e)}")
             import traceback
             self.log(traceback.format_exc())
+            self.set_status("搜索出错")
         finally:
-            # 恢复状态
-            self.is_searching = False
+            # 恢复按钮状态
             self.search_button.config(state=tk.NORMAL)
             self.download_button.config(state=tk.NORMAL)
-            self.set_status("搜索完成")
     
     async def display_results(self, results):
         """
@@ -392,8 +373,13 @@ class PPTDownloaderGUI:
         # 更新全选按钮状态
         self.select_all_var.set(True)
         
-    async def download(self):
+    def download(self):
         """下载选中的PPT"""
+        # 使用事件循环执行异步下载
+        asyncio.run_coroutine_threadsafe(self._download(), self.loop)
+    
+    async def _download(self):
+        """异步下载选中的PPT"""
         # 获取选中项
         selected_items = []
         for item in self.result_table.get_children():
@@ -542,6 +528,62 @@ class PPTDownloaderGUI:
         except Exception as e:
             self.log(f"关闭爬虫时发生错误: {str(e)}")
             
+    def select_all(self):
+        """全选所有项目"""
+        for item in self.result_table.get_children():
+            self.result_table.set(item, "选择", "✓")
+    
+    def on_item_click(self, event):
+        """单击表格项目时的处理"""
+        # 获取点击的行和列
+        row_id = self.result_table.identify_row(event.y)
+        col_id = self.result_table.identify_column(event.x)
+        
+        if not row_id:
+            return
+            
+        # 如果点击的是第一列（选择列）
+        if col_id == "#1":  # 第一列
+            # 切换选择状态
+            current_value = self.result_table.item(row_id, "values")[0]
+            new_value = "✓" if current_value in ["□", ""] else "□"
+            self.result_table.set(row_id, "选择", new_value)
+    
+    def on_item_double_click(self, event):
+        """双击表格项目时的处理"""
+        # 获取双击的行
+        row_id = self.result_table.identify_row(event.y)
+        if not row_id:
+            return
+            
+        # 获取对应的搜索结果
+        item_index = self.result_table.index(row_id)
+        if item_index < len(self.search_results):
+            result = self.search_results[item_index]
+            url = result["url"]
+            
+            # 使用默认浏览器打开URL
+            self.log(f"打开URL: {url}")
+            import webbrowser
+            webbrowser.open(url)
+
+    def on_closing(self):
+        """关闭窗口时的处理"""
+        if self.is_downloading:
+            if not messagebox.askokcancel("确认退出", "下载正在进行中，确定要退出吗？"):
+                return
+        
+        # 关闭爬虫
+        try:
+            asyncio.run_coroutine_threadsafe(self.close_scrapers(), self.loop)
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=1.0)
+        except Exception as e:
+            print(f"关闭程序时发生错误: {e}")
+        
+        # 关闭窗口
+        self.root.destroy()
+
 if __name__ == "__main__":
     # 创建主窗口
     root = tk.Tk()

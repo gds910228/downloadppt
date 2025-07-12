@@ -24,178 +24,155 @@ class YppptPlaywrightScraper(PlaywrightScraper):
         self.search_url = "https://www.ypppt.com/search/{}.html"
         self.alt_search_url = "https://www.ypppt.com/index.php?s={}"
     
-    async def search(self, keyword, max_results=10):
+    async def search(self, keyword, max_results=40):
         """
-        搜索优品PPT网站
+        搜索PPT
         
         Args:
             keyword (str): 搜索关键词
-            max_results (int): 最大结果数
+            max_results (int): 最大结果数量
             
         Returns:
-            list: 搜索结果列表
+            list: 搜索结果列表，每个结果包含标题、URL等信息
         """
         results = []
         
         try:
-            # 确保已初始化
-            if not self.is_initialized:
-                await self.initialize()
-                
-            # 模拟搜索前的随机等待
-            await asyncio.sleep(random.uniform(2, 4))
+            # 构建搜索URL
+            search_url = f"https://www.ypppt.com/search/{urllib.parse.quote(keyword)}/"
             
-            # 构造搜索URL
-            encoded_keyword = quote(keyword)
-            search_url = self.search_url.format(encoded_keyword)
-            
-            # 添加搜索引擎来源的引用页
-            search_engines = [
-                "https://www.baidu.com/s?wd=PPT%20{}",
-                "https://www.sogou.com/web?query=PPT%20{}",
-                "https://cn.bing.com/search?q=PPT%20{}"
-            ]
-            referer = random.choice(search_engines).format(encoded_keyword)
-            
-            # 确保页面对象存在
-            if self.page is None:
-                print("页面对象不存在，重新初始化...")
-                await self.initialize()
-                
-            await self.page.set_extra_http_headers({
-                "Referer": referer,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                "Cache-Control": "max-age=0",
-                "Sec-Ch-Ua": '"Chromium";v="116", "Not)A;Brand";v="24", "Google Chrome";v="116"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-            })
-            
+            # 访问搜索页面
             print(f"正在搜索: {search_url}")
             
-            # 模拟更真实的搜索行为
-            # 1. 先访问网站首页
-            try:
-                await self.get_page_content(self.base_url, wait_for_selector="body")
-                await asyncio.sleep(random.uniform(1, 3))
+            # 访问首页，获取cookie
+            await self.page.goto("https://www.ypppt.com", wait_until="domcontentloaded")
+            
+            # 访问搜索页面
+            print("正在访问搜索页面...")
+            await self.page.goto(search_url, wait_until="domcontentloaded")
+            
+            # 获取搜索结果
+            page_num = 1
+            while len(results) < max_results:
+                print(f"正在获取第 {page_num} 页搜索结果...")
                 
-                # 随机点击一个分类链接，模拟真实浏览
-                if random.random() < 0.5:
-                    try:
-                        category_link = await self.page.query_selector(".topnav a")
-                        if category_link:
-                            await category_link.click()
-                            await asyncio.sleep(random.uniform(2, 4))
-                            await self.page.go_back()
-                            await asyncio.sleep(random.uniform(1, 2))
-                    except:
-                        pass
-            except:
-                pass
-            
-            # 使用Playwright访问搜索页面
-            content = await self.get_page_content(search_url, wait_for_selector=".posts li, .box li")
-            
-            # 防止搜索被阻止的重试机制
-            retry_count = 0
-            while (content == "" or "404" in content) and retry_count < 3:
-                print(f"搜索结果为空或404，尝试重试 ({retry_count + 1}/3)...")
-                # 随机等待更长时间
-                await asyncio.sleep(random.uniform(5, 15))
+                # 等待搜索结果加载
+                await self.page.wait_for_selector("div.posts", timeout=10000)
                 
-                # 清除cookies或重新初始化
-                if random.random() < 0.5:
-                    await self.page.context.clear_cookies()
-                    await self.initialize()  # 重新初始化
+                # 获取页面标题，验证是否是搜索结果页
+                page_title = await self.page.title()
+                print(f"页面标题: {page_title}")
                 
-                # 更换User-Agent
-                user_agent = random.choice(self.user_agents)
-                await self.page.set_extra_http_headers({"User-Agent": user_agent})
+                # 获取搜索结果列表
+                content = await self.page.content()
+                soup = BeautifulSoup(content, "html.parser")
                 
-                # 再次尝试
-                content = await self.get_page_content(search_url, wait_for_selector=".posts li, .box li")
-                retry_count += 1
-            
-            # 保存搜索结果页面以便调试
-            with open("ypppt_search_result.html", "w", encoding="utf-8") as f:
-                f.write(content)
+                # 查找主容器
+                main_container = soup.select_one("div.posts")
+                if main_container:
+                    print("找到主容器 div.posts")
+                    
+                    # 查找所有列表项
+                    list_items = main_container.select("li.post")
+                    print(f"找到 {len(list_items)} 个列表项")
+                    
+                    # 处理每个列表项
+                    for item in list_items:
+                        if len(results) >= max_results:
+                            break
+                            
+                        # 获取标题和链接
+                        title_elem = item.select_one("h2.entry-title a")
+                        if title_elem:
+                            title = title_elem.text.strip()
+                            print(f"获取标题: {title[:20]}")
+                            
+                            # 获取链接
+                            url = title_elem.get("href", "")
+                            if not url.startswith("http"):
+                                url = f"https://www.ypppt.com{url}"
+                            
+                            # 获取日期和分类
+                            date_elem = item.select_one("span.entry-date")
+                            date = date_elem.text.strip() if date_elem else ""
+                            
+                            category_elem = item.select_one("span.entry-category a")
+                            category = category_elem.text.strip() if category_elem else ""
+                            
+                            # 添加到结果列表
+                            results.append({
+                                "title": title,
+                                "url": url,
+                                "date": date,
+                                "category": category,
+                                "source": "优品PPT"
+                            })
                 
-            # 解析页面
-            soup = BeautifulSoup(content, "html.parser")
-            
-            # 获取页面标题
-            page_title = soup.title.text if soup.title else "无标题"
-            print(f"页面标题: {page_title}")
-            
-            # 检查是否有反爬虫提示
-            if "验证" in content or "防爬" in content or "访问频繁" in content or "访问受限" in content:
-                print("检测到反爬虫机制，正在尝试绕过...")
-                # 尝试休息一段时间后再次访问
-                await asyncio.sleep(random.uniform(15, 30))
-                await self.initialize()  # 重新初始化
-                return await self.search(keyword, max_results)
-            
-            # 检查是否是404页面
-            if "404" in page_title:
-                print(f"搜索请求失败，状态码: 404")
-                return await self._search_alternative(keyword, max_results)
-            
-            # 获取搜索结果列表
-            search_results = (
-                soup.select(".posts li") or 
-                soup.select(".box li") or
-                soup.select(".list li")
-            )
-            
-            if not search_results:
-                print("没有找到相关PPT，尝试备用搜索方法")
-                return await self._search_alternative(keyword, max_results)
-                
-            print(f"找到 {len(search_results)} 个搜索结果")
-            
-            for i, item in enumerate(search_results):
-                if i >= max_results:
+                # 检查是否有下一页
+                next_page = soup.select_one("div.pagination a.next")
+                if not next_page or page_num * 20 >= max_results:  # 优品PPT每页约20条
+                    # 没有下一页或已达到最大结果数量
                     break
-                    
-                # 提取PPT信息
-                title_element = item.select_one("h2 a") or item.select_one("a")
-                if not title_element:
-                    continue
-                    
-                title = title_element.text.strip()
-                detail_url = urljoin(self.base_url, title_element.get("href", ""))
                 
-                # 提取缩略图
-                thumb_element = item.select_one("img")
-                thumbnail = urljoin(self.base_url, thumb_element.get("src", "")) if thumb_element else ""
-                
-                # 提取日期信息
-                date_element = item.select_one(".info span") or item.select_one(".date")
-                date = date_element.text.strip() if date_element else ""
-                
-                # 构建结果
-                result = {
-                    "title": title,
-                    "url": detail_url,
-                    "thumbnail": thumbnail,
-                    "date": date,
-                    "category": "",
-                    "source": "优品PPT"
-                }
-                
-                results.append(result)
-                
-                # 模拟真实的搜索和浏览行为，在结果间添加随机延时
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-                
-            # 如果搜索结果为空，尝试使用备用搜索方法
+                # 点击下一页
+                try:
+                    next_page_link = await self.page.query_selector("div.pagination a.next")
+                    if next_page_link:
+                        print(f"点击下一页，当前已获取 {len(results)} 条结果")
+                        await next_page_link.click()
+                        await self.page.wait_for_load_state("domcontentloaded")
+                        page_num += 1
+                        # 等待一下，避免被反爬
+                        await asyncio.sleep(1)
+                    else:
+                        print("未找到下一页链接")
+                        break
+                except Exception as e:
+                    print(f"点击下一页时出错: {str(e)}")
+                    break
+            
+            # 使用备用解析方法
             if not results:
-                return await self._search_alternative(keyword, max_results)
+                print("尝试使用备用解析方法...")
                 
+                # 等待搜索结果加载
+                await self.page.wait_for_selector("div.box", timeout=10000)
+                
+                # 获取页面内容
+                content = await self.page.content()
+                soup = BeautifulSoup(content, "html.parser")
+                
+                # 查找所有结果项
+                result_items = soup.select("div.box ul li")
+                print(f"通过备用解析方法找到 {len(result_items)} 个结果")
+                
+                # 处理每个结果项
+                for item in result_items:
+                    if len(results) >= max_results:
+                        break
+                    
+                    # 获取标题和链接
+                    title_elem = item.select_one("a")
+                    if title_elem:
+                        title = title_elem.text.strip()
+                        url = title_elem.get("href", "")
+                        
+                        if not url.startswith("http"):
+                            url = f"https://www.ypppt.com{url}"
+                        
+                        # 添加到结果列表
+                        results.append({
+                            "title": title,
+                            "url": url,
+                            "date": "",
+                            "category": "",
+                            "source": "优品PPT"
+                        })
         except Exception as e:
             print(f"搜索过程中发生错误: {str(e)}")
-            return await self._search_alternative(keyword, max_results)
-            
+            import traceback
+            print(traceback.format_exc())
+        
         return results
     
     async def _search_alternative(self, keyword, max_results=10):
