@@ -370,6 +370,9 @@ class PPTDownloaderGUI:
             category = result.get("category", "")
             source = result.get("source", "")
             
+            # 初始化选择状态
+            result["selected"] = False
+            
             # 添加到表格
             self.result_table.insert("", tk.END, values=("", title, date, category, source))
         
@@ -393,7 +396,16 @@ class PPTDownloaderGUI:
         """下载选中的PPT"""
         try:
             # 获取选中的项目
-            selected_items = self.result_table.selection()
+            selected_items = []
+            selected_indices = []
+            
+            # 使用内部selected状态而不是表格选择
+            for i, item in enumerate(self.search_results):
+                if item.get("selected", False):
+                    item_id = self.result_table.get_children()[i]
+                    selected_items.append(item_id)
+                    selected_indices.append(i)
+            
             if not selected_items:
                 messagebox.showinfo("提示", "请先选择要下载的PPT")
                 return
@@ -561,6 +573,10 @@ class PPTDownloaderGUI:
         """全选所有项目"""
         for item in self.result_table.get_children():
             self.result_table.set(item, "选择", "✓")
+            # 确保内部状态也被更新
+            item_index = self.result_table.index(item)
+            if item_index < len(self.search_results):
+                self.search_results[item_index]["selected"] = True
     
     def on_item_click(self, event):
         """单击表格项目时的处理"""
@@ -577,6 +593,11 @@ class PPTDownloaderGUI:
             current_value = self.result_table.item(row_id, "values")[0]
             new_value = "✓" if current_value in ["□", ""] else "□"
             self.result_table.set(row_id, "选择", new_value)
+            
+            # 更新内部状态
+            item_index = self.result_table.index(row_id)
+            if item_index < len(self.search_results):
+                self.search_results[item_index]["selected"] = (new_value == "✓")
     
     def on_item_double_click(self, event):
         """双击表格项目时的处理"""
@@ -595,6 +616,17 @@ class PPTDownloaderGUI:
             self.log(f"打开URL: {url}")
             import webbrowser
             webbrowser.open(url)
+
+    async def close_scrapers(self):
+        """关闭所有爬虫"""
+        try:
+            if hasattr(self, 'oneppt_scraper') and self.oneppt_scraper:
+                await self.oneppt_scraper.close()
+            
+            if hasattr(self, 'ypppt_scraper') and self.ypppt_scraper:
+                await self.ypppt_scraper.close()
+        except Exception as e:
+            print(f"关闭爬虫时发生错误: {e}")
 
     def on_closing(self):
         """关闭窗口时的处理"""
