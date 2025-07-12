@@ -10,6 +10,7 @@ import time
 import random
 import asyncio
 import re
+import urllib.parse
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, quote
 from .playwright_scraper import PlaywrightScraper
@@ -37,18 +38,39 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
         results = []
         
         try:
-            # 构建搜索URL
-            search_url = f"https://www.1ppt.com/plus/so.php?kwtype=0&q={urllib.parse.quote(keyword)}"
+            # 将关键词转换为GBK编码的URL参数
+            try:
+                encoded_keyword = keyword.encode('gbk')
+                gbk_keyword = ''
+                for byte in encoded_keyword:
+                    gbk_keyword += '%{:02X}'.format(byte)
+                print(f"GBK编码关键词: {gbk_keyword}")
+            except Exception as e:
+                print(f"编码关键词失败: {str(e)}")
+                gbk_keyword = urllib.parse.quote(keyword)
+            
+            # 构建搜索URL - 1PPT使用GBK编码
+            search_url = f"https://www.1ppt.com/plus/so.php?kwtype=0&q={gbk_keyword}"
             
             # 访问搜索页面
             print(f"正在搜索: {search_url}")
             
             # 访问首页，获取cookie
             await self.page.goto("https://www.1ppt.com", wait_until="domcontentloaded")
+            await asyncio.sleep(1)  # 确保页面加载完成
             
             # 访问搜索页面
             print("正在访问搜索页面...")
             await self.page.goto(search_url, wait_until="domcontentloaded")
+            await asyncio.sleep(1)  # 确保页面加载完成
+            
+            # 保存搜索结果页面以便调试
+            try:
+                content = await self.page.content()
+                with open("search_result_1ppt.html", "w", encoding="utf-8") as f:
+                    f.write(content)
+            except Exception as e:
+                print(f"保存搜索结果页面失败: {str(e)}")
             
             # 获取搜索结果
             page_num = 1
@@ -56,42 +78,75 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                 print(f"正在获取第 {page_num} 页搜索结果...")
                 
                 # 等待搜索结果加载
-                await self.page.wait_for_selector("div.w.center.mt8", timeout=10000)
+                try:
+                    await self.page.wait_for_selector("div.w.center.mt8, ul.cList, ul.tplist", timeout=5000)
+                except Exception as e:
+                    print(f"等待选择器失败: {str(e)}")
+                
+                # 确保页面加载完成
+                await asyncio.sleep(1)
                 
                 # 获取页面标题，验证是否是搜索结果页
                 page_title = await self.page.title()
                 print(f"页面标题: {page_title}")
                 
-                # 获取搜索结果列表
-                content = await self.page.content()
+                # 获取页面内容
+                try:
+                    content = await self.page.content()
+                    # 保存当前页面内容以便调试
+                    with open(f"search_result_1ppt_page{page_num}.html", "w", encoding="utf-8") as f:
+                        f.write(content)
+                except Exception as e:
+                    print(f"获取页面内容失败: {str(e)}")
+                    content = ""
+                
+                if not content:
+                    print("页面内容为空，跳过当前页")
+                    break
+                
                 soup = BeautifulSoup(content, "html.parser")
                 
-                # 查找主容器
-                main_container = soup.select_one("div.w.center.mt8")
+                # 查找主容器 - 尝试多种可能的选择器
+                main_container = (
+                    soup.select_one("div.w.center.mt8 ul.tplist") or 
+                    soup.select_one("ul.tplist") or 
+                    soup.select_one("div.w.center.mt8") or 
+                    soup.select_one("div.center.mt8") or 
+                    soup.select_one("ul.cList")
+                )
+                
                 if main_container:
-                    print("找到主容器 div.w.center.mt8")
+                    print(f"找到主容器: {main_container.name}.{' '.join(main_container.get('class', []))}")
                     
-                    # 查找所有列表项，排除广告
-                    list_items = main_container.select("li:not(.ad)")
-                    print(f"找到 {len(list_items)} 个非广告列表项")
+                    # 查找所有列表项
+                    list_items = main_container.select("li:not(.ad)") or main_container.select("li")
+                    print(f"找到 {len(list_items)} 个列表项")
                     
                     # 处理每个列表项
                     for item in list_items:
                         if len(results) >= max_results:
                             break
-                            
+                        
                         # 获取标题和链接
-                        title_elem = item.select_one("h2")
+                        title_elem = item.select_one("h2") or item.select_one("a")
                         if title_elem:
-                            title = title_elem.text.strip()
-                            print(f"从h2标签获取标题: {title[:20]}")
+                            # 获取标题
+                            if title_elem.name == "h2":
+                                link_elem = title_elem.select_one("a")
+                                title = title_elem.text.strip()
+                            else:
+                                link_elem = title_elem
+                                title = title_elem.text.strip()
+                            
+                            print(f"找到标题: {title[:30]}")
                             
                             # 获取链接
-                            link_elem = title_elem.select_one("a")
                             if link_elem and "href" in link_elem.attrs:
                                 url = link_elem["href"]
                                 if not url.startswith("http"):
                                     url = f"https://www.1ppt.com{url}"
+                                
+                                print(f"找到链接: {url}")
                                 
                                 # 获取日期和分类
                                 date = ""
@@ -105,71 +160,49 @@ class OnePptPlaywrightScraper(PlaywrightScraper):
                                     "category": category,
                                     "source": "1PPT"
                                 })
+                else:
+                    print("未找到主容器")
                 
                 # 检查是否有下一页
-                next_page = soup.select_one("div.page a:contains('下一页')")
-                if not next_page or page_num * 40 >= max_results:
+                next_page = soup.select_one("div.page a:contains('下一页')") or soup.select_one("ul.pages a:contains('下一页')")
+                if not next_page or page_num * 24 >= max_results:
                     # 没有下一页或已达到最大结果数量
+                    print("没有下一页或已达到最大结果数量")
                     break
                 
-                # 点击下一页
+                # 从页面中提取TotalResult参数
+                total_result = 0
+                page_info = soup.select_one("div.page") or soup.select_one("ul.pages")
+                if page_info:
+                    page_text = page_info.text
+                    match = re.search(r'共(\d+)页/(\d+)条', page_text)
+                    if match:
+                        total_result = int(match.group(2))
+                        print(f"总结果数: {total_result}")
+                
+                # 构建下一页URL
+                page_num += 1
+                
+                # 构建翻页URL
+                next_page_url = f"https://www.1ppt.com/plus/so.php?keyword={gbk_keyword}&searchtype=titlekeyword&channeltype=0&orderby=&kwtype=0&pagesize=24&typeid=0&TotalResult={total_result}&PageNo={page_num}"
+                print(f"下一页URL: {next_page_url}")
+                
+                # 访问下一页
+                await self.page.goto(next_page_url, wait_until="domcontentloaded")
+                await asyncio.sleep(2)  # 确保页面加载完成
+                
+                # 保存下一页内容以便调试
                 try:
-                    next_page_link = await self.page.query_selector("div.page a:has-text('下一页')")
-                    if next_page_link:
-                        print(f"点击下一页，当前已获取 {len(results)} 条结果")
-                        await next_page_link.click()
-                        await self.page.wait_for_load_state("domcontentloaded")
-                        page_num += 1
-                        # 等待一下，避免被反爬
-                        await asyncio.sleep(1)
-                    else:
-                        print("未找到下一页链接")
-                        break
+                    content = await self.page.content()
+                    with open(f"search_result_1ppt_page{page_num}.html", "w", encoding="utf-8") as f:
+                        f.write(content)
                 except Exception as e:
-                    print(f"点击下一页时出错: {str(e)}")
-                    break
+                    print(f"保存下一页内容失败: {str(e)}")
             
-            # 使用新的解析方法
+            # 如果没有结果，尝试备用搜索方法
             if not results:
-                print("尝试使用新的解析方法...")
-                
-                # 等待搜索结果加载
-                await self.page.wait_for_selector("div.w.center.mt8", timeout=10000)
-                
-                # 获取页面内容
-                content = await self.page.content()
-                soup = BeautifulSoup(content, "html.parser")
-                
-                # 查找所有结果项
-                result_items = soup.select("div.w.center.mt8 li")
-                print(f"通过新解析方法找到 {len(result_items)} 个结果")
-                
-                # 处理每个结果项
-                for item in result_items:
-                    if len(results) >= max_results:
-                        break
-                        
-                    # 排除广告
-                    if "ad" in item.get("class", []):
-                        continue
-                    
-                    # 获取标题和链接
-                    title_elem = item.select_one("h2 a")
-                    if title_elem:
-                        title = title_elem.text.strip()
-                        url = title_elem.get("href", "")
-                        
-                        if not url.startswith("http"):
-                            url = f"https://www.1ppt.com{url}"
-                        
-                        # 添加到结果列表
-                        results.append({
-                            "title": title,
-                            "url": url,
-                            "date": "",
-                            "category": "",
-                            "source": "1PPT"
-                        })
+                print("没有找到搜索结果，尝试备用搜索方法...")
+                results = await self._search_alternative(keyword, max_results)
         except Exception as e:
             print(f"搜索过程中发生错误: {str(e)}")
             import traceback
