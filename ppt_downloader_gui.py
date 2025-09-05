@@ -118,7 +118,7 @@ class PPTDownloaderGUI:
         # 下载数量
         ttk.Label(self.search_frame, text="下载数量:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.number_var = tk.IntVar(value=5)
-        self.number_spinbox = ttk.Spinbox(self.search_frame, from_=1, to=20, textvariable=self.number_var, width=5)
+        self.number_spinbox = ttk.Spinbox(self.search_frame, from_=1, to=1000, textvariable=self.number_var, width=5)
         self.number_spinbox.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         
         # 保存路径
@@ -181,7 +181,7 @@ class PPTDownloaderGUI:
 
 1. 搜索关键词：输入要搜索的PPT关键词
 2. 搜索网站：选择要搜索的网站（全部、1PPT或优品PPT）
-3. 下载数量：设置要下载的PPT数量（1-20）
+3. 下载数量：设置要下载的PPT数量（1-1000）
 4. 保存路径：设置PPT文件保存的位置
 5. 点击"搜索并下载"开始下载
 6. 下载过程和结果将显示在下方文本框
@@ -212,8 +212,8 @@ class PPTDownloaderGUI:
             number = int(self.number_var.get())
             if number < 1:
                 number = 1
-            elif number > 20:
-                number = 20
+            elif number > 1000:
+                number = 1000
         except:
             number = 5
         

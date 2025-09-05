@@ -1,0 +1,76 @@
+# Python bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# Tests / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Type checking / linters
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+
+# Editors / IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Project outputs
+downloads/
+temp/
+.codebuddy/
+.cursor/
+
+# Playwright outputs
+playwright-report/
+test-results/
+.playwright/
+
+# Debug artifacts at repo root (do not track)
+1ppt_response.html
+anti_crawl_page.html
+debug_1ppt_search.html
+download_page.html
+extracted_js.js
+search_result.html
+search_result_1ppt.html
+search_result_1ppt_page*.html
+search_result_playwright*.html
+ypppt_search_result.html
