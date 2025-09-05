@@ -16,6 +16,47 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from scrapers.oneppt import OnePptScraper
 from scrapers.ypppt import YppptScraper
+from scrapers.oneppt_playwright import OnePptPlaywrightScraper
+import asyncio
+
+# Playwright 异步封装，避免跨事件循环复用实例
+def pw_search(keyword, number):
+    async def _run():
+        s = OnePptPlaywrightScraper()
+        try:
+            # 显式初始化，确保有可用的 page/context
+            await s.initialize()
+            return await s.search(keyword, number)
+        finally:
+            try:
+                await s.close()
+            except Exception:
+                pass
+    return asyncio.run(_run())
+
+def pw_get_links(detail_url):
+    async def _run():
+        s = OnePptPlaywrightScraper()
+        try:
+            return await s.get_download_links(detail_url)
+        finally:
+            try:
+                await s.close()
+            except Exception:
+                pass
+    return asyncio.run(_run())
+
+def pw_download(download_url, file_path, title):
+    async def _run():
+        s = OnePptPlaywrightScraper()
+        try:
+            return await s.download(download_url, file_path, title=title)
+        finally:
+            try:
+                await s.close()
+            except Exception:
+                pass
+    return asyncio.run(_run())
 
 class RedirectText:
     """重定向标准输出到Text控件"""
@@ -219,7 +260,18 @@ class PPTDownloaderGUI:
             if site in ["1ppt", "all"]:
                 print(f"\n===== 正在从1PPT网站搜索 '{keyword}' =====")
                 oneppt_scraper = OnePptScraper()
+                used_playwright = False
                 search_results = oneppt_scraper.search(keyword, number)
+                if not search_results:
+                    try:
+                        print("常规请求可能被反爬，启用 Playwright 兜底搜索...")
+                        search_results = pw_search(keyword, number)
+                        used_playwright = bool(search_results)
+                        if not used_playwright:
+                            print("Playwright 兜底搜索也未找到结果")
+                    except Exception as e:
+                        print(f"Playwright 兜底搜索失败: {e}")
+                        used_playwright = False
                 
                 if search_results:
                     print(f"找到 {len(search_results)} 个相关PPT")
@@ -236,8 +288,11 @@ class PPTDownloaderGUI:
                         self.progress_var.set(progress)
                         self.status_var.set(f"正在处理: {result['title']}")
                         
-                        # 获取下载链接
-                        download_links = oneppt_scraper.get_download_links(result['url'])
+                        # 获取下载链接（根据是否启用 Playwright 兜底选择实现）
+                        if 'used_playwright' in locals() and used_playwright:
+                            download_links = pw_get_links(result['url'])
+                        else:
+                            download_links = oneppt_scraper.get_download_links(result['url'])
                         
                         if download_links['local'] or download_links['netdisk']:
                             # 优先使用本地下载链接
@@ -272,8 +327,11 @@ class PPTDownloaderGUI:
                                 print(f"网盘链接已保存到: {file_path}")
                                 total_downloaded += 1
                             else:
-                                # 下载文件
-                                success = oneppt_scraper.download(download_url, file_path)
+                                # 下载文件（根据是否启用 Playwright 兜底选择实现）
+                                if 'used_playwright' in locals() and used_playwright:
+                                    success = pw_download(download_url, file_path, title=result['title'])
+                                else:
+                                    success = oneppt_scraper.download(download_url, file_path)
                                 if success:
                                     total_downloaded += 1
                         else:
